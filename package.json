@@ -1,0 +1,23 @@
+{
+  "name": "pokemon-battle-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "start": "node --env-file=.env --import tsx src/server.ts",
+    "demo": "PBA_SOURCE=demo node --env-file=.env --import tsx src/server.ts",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@smogon/calc": "^0.12.0"
+  },
+  "description": "Live battle advisor for Pok\u00e9mon Sword/Shield running in the Eden Switch emulator (Linux)",
+  "license": "MIT"
+}

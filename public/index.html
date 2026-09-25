@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle Assistant</title>
+<style>
+  :root {
+    --bg: #111418; --panel: #1b2027; --line: #2a313b; --text: #e8ecf1; --muted: #8b95a3;
+    --good: #3ecf8e; --warn: #f5b942; --bad: #f2555a; --accent: #6aa9ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, sans-serif; padding: 20px; }
+  .wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .rec { border-color: var(--accent); }
+  .rec .label { color: var(--accent); font-size: 13px; font-weight: 700; letter-spacing: .08em; }
+  .rec .choice { font-size: 44px; font-weight: 800; margin: 2px 0 6px; }
+  .rec .reason { font-size: 19px; }
+  .rec .alt, .meta { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .versus { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .mon h2 { margin: 0 0 6px; font-size: 24px; }
+  .mon .side { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+  .types span, .type { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #fff; margin-right: 4px; }
+  .hpbar { height: 12px; background: var(--line); border-radius: 6px; overflow: hidden; margin: 10px 0 4px; }
+  .hpbar div { height: 100%; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 4px 6px; }
+  td { padding: 7px 6px; border-top: 1px solid var(--line); }
+  tr.best td { background: rgba(106,169,255,.08); }
+  .bar { position: relative; height: 8px; background: var(--line); border-radius: 4px; min-width: 120px; }
+  .bar div { position: absolute; height: 100%; border-radius: 4px; }
+  .eff2 { color: var(--good); font-weight: 700; } .eff0 { color: var(--bad); } .effh { color: var(--warn); }
+  h3 { margin: 0 0 8px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .thinking { color: var(--muted); font-size: 22px; }
+  #moves tr[data-move] { cursor: pointer; }
+  #moves tr[data-move]:hover td { background: rgba(255,255,255,.04); }
+  .est button { background: var(--line); color: var(--text); border: 0; border-radius: 6px; padding: 3px 8px; margin: 6px 4px 0 0; cursor: pointer; font: inherit; font-size: 13px; }
+  .est button:hover { background: var(--accent); }
+  @media (max-width: 700px) { .versus { grid-template-columns: 1fr; } .rec .choice { font-size: 32px; } body { padding: 16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel rec" id="rec"><div class="thinking">Waiting for a battle…</div></div>
+  <div class="versus" id="versus"></div>
+  <div class="panel" id="trainPanel"><h3 id="trainTitle">Training</h3><div id="train"></div></div>
+  <div class="panel" id="catchPanel"><h3>Catch chance (per throw)</h3><div id="catch"></div></div>
+  <div class="panel"><h3>Your moves</h3><table id="moves"></table></div>
+  <div class="versus">
+    <div class="panel"><h3>Enemy threats to you</h3><table id="threats"></table></div>
+    <div class="panel"><h3>Switch options</h3><table id="switches"></table></div>
+  </div>
+  <div class="meta" id="meta"></div>
+
+</div>
+<script>
+const TYPE = { Normal:"#9fa19f", Fire:"#e62829", Water:"#2980ef", Electric:"#fac000", Grass:"#3fa129", Ice:"#3dcef3", Fighting:"#ff8000", Poison:"#9141cb", Ground:"#915121", Flying:"#81b9ef", Psychic:"#ef4179", Bug:"#91a119", Rock:"#afa981", Ghost:"#704170", Dragon:"#5060e1", Dark:"#624d4e", Steel:"#60a1b8", Fairy:"#ef70ef" };
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const badge = (t) => `<span class="type" style="background:${TYPE[t] ?? "#555"}">${esc(t)}</span>`;
+const hpColor = (p) => p > 50 ? "var(--good)" : p > 20 ? "var(--warn)" : "var(--bad)";
+const eff = (e) => e >= 2 ? `<span class="eff2">×${e}</span>` : e === 0 ? `<span class="eff0">immune</span>` : e < 1 ? `<span class="effh">×${e}</span>` : "";
+const dmgBar = (lo, hi) => `<div class="bar"><div style="left:0;width:${Math.min(100, lo)}%;background:var(--accent)"></div><div style="left:${Math.min(100, lo)}%;width:${Math.max(0, Math.min(100, hi) - Math.min(100, lo))}%;background:var(--accent);opacity:.45"></div></div>`;
+
+function mon(side, m, est) {
+  const pct = Math.round(100 * m.hp / m.maxHP);
+  return `<div class="panel mon"><div class="side">${side}</div>
+    <h2>${esc(m.name)} <small style="color:var(--muted);font-weight:400">Lv ${m.level}</small></h2>
+    <div class="types">${m.types.map(badge).join("")}</div>
+    <div class="hpbar"><div style="width:${pct}%;background:${hpColor(pct)}"></div></div>
+    <div>${est ? `~${pct}% HP <span class="meta">(estimate)</span>` : `${m.hp}/${m.maxHP} HP (${pct}%)`} ${m.status ? `· <b>${esc(m.status.toUpperCase())}</b>` : ""}</div>
+    ${Object.keys(m.boosts ?? {}).length ? `<div style="margin-top:6px">${Object.entries(m.boosts).map(([k, v]) =>
+      `<span class="type" style="background:${v > 0 ? "var(--bad)" : "var(--accent)"}">${esc({ atk: "Atk", def: "Def", spa: "SpA", spd: "SpD", spe: "Spe", accuracy: "Acc", evasion: "Eva" }[k] ?? k)} ${v > 0 ? "+" : ""}${v}</span>`).join("")}</div>` : ""}
+    <div class="meta">${esc(m.ability)}${m.item ? " · " + esc(m.item) : ""} · Speed ${m.speed}</div></div>`;
+}
+
+const post = (u) => fetch(u, { method: "POST" });
+const STATUS = {
+  "no-emulator": "Eden isn't running (or Sword isn't loaded).",
+  "waiting": "Waiting for a battle…",
+};
+function render(d) {
+  const a = d.analysis;
+  const hide = !a;
+  for (const el of document.querySelectorAll(".versus, #moves, #meta")) el.closest(".panel, .versus, .meta").style.display = hide ? "none" : "";
+  if (!a) {
+    const heal = (d.topUp ?? []).length
+      ? `<div style="margin-top:12px"><span class="label" style="color:var(--warn)">HEAL BEFORE THE NEXT FIGHT</span>` +
+        d.topUp.map((m) => `<div style="font-size:18px;margin-top:4px"><b>${esc(m.name)}</b> ${m.hp}/${m.maxHP}${m.item ? ` → ${esc(m.item)}` : ""}</div>`).join("") + `</div>`
+      : "";
+    document.getElementById("rec").innerHTML = `<div class="thinking">${esc(STATUS[d.status] ?? d.status)}</div>${heal}`;
+    return;
+  }
+  document.getElementById("versus").innerHTML = mon("You", a.me) + mon(a.trainer ? "Trainer's" : "Wild", a.enemy, d.estimated);
+  if (a.enemyBench.length) document.querySelectorAll("#versus .mon")[1].insertAdjacentHTML("beforeend",
+    `<div class="meta">Still to come: ${a.enemyBench.map((m) => `${esc(m.name)} Lv ${m.level}`).join(", ")}</div>`);
+  const rec = document.getElementById("rec");
+  if (d.advice) {
+    rec.innerHTML = `<div class="label">${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.action === "item" ? "USE ITEM" : "USE"}</div>
+      <div class="choice">${esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
+      <div class="alt">Alternative: ${esc(d.advice.alternative)}</div>
+      ${d.advice.rejected ? `<div class="meta" style="margin-top:8px">✋ ${esc(d.advice.rejected)}</div>` : ""}`;
+  } else if (d.error) {
+    rec.innerHTML = `<div class="label">ADVICE UNAVAILABLE</div><div class="reason">${esc(d.error)}</div><div class="alt">The damage numbers below are still accurate.</div>`;
+  } else {
+    rec.innerHTML = `<div class="thinking">Thinking…</div>`;
+  }
+  if (a.swap && !(d.advice?.action === "switch" && d.advice.choice === a.swap.to)) {
+    rec.insertAdjacentHTML("beforeend", `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="label" style="color:var(--warn)">BETTER MATCHUP · SWAP TO</span>
+      <div style="font-size:26px;font-weight:800">${esc(a.swap.to)}</div><div class="meta">${esc(a.swap.reason)}</div></div>`);
+  }
+  if (d.heal && d.advice?.action !== "item") {
+    rec.insertAdjacentHTML("beforeend", `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="label" style="color:var(--good)">HEAL OPTION</span>
+      <div style="font-size:22px;font-weight:700">${esc(d.heal.item)} on ${esc(d.heal.target)} <span class="meta">(×${d.heal.count})</span></div>
+      <div class="meta">${esc(d.heal.reason)}</div></div>`);
+  }
+  if (d.cure && d.advice?.action !== "item") {
+    const label = { slp: "asleep", par: "paralyzed", brn: "burned", psn: "poisoned", tox: "badly poisoned", frz: "frozen" }[d.cure.status] ?? d.cure.status;
+    rec.insertAdjacentHTML("beforeend", `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="label" style="color:var(--good)">CURE OPTION</span>
+      <div style="font-size:22px;font-weight:700">${esc(d.cure.item)} on ${esc(d.cure.target)} <span class="meta">(${label}, ×${d.cure.count})</span></div></div>`);
+  }
+  const best = d.advice?.action === "move" ? d.advice.choice : null;
+  document.getElementById("moves").innerHTML = `<tr><th>Move</th><th>Type</th><th>Damage (% max HP)</th><th></th><th>KO</th><th>PP</th></tr>` +
+    a.myMoves.map((m) => `<tr class="${m.move === best ? "best" : ""}"><td><b>${esc(m.move)}</b></td><td>${badge(m.type)}</td>
+      <td>${m.category === "Status" ? "<span class='meta'>status</span>" : dmgBar(...m.pctMax)}</td>
+      <td>${m.category === "Status" ? "" : `${m.pctMax[0]}–${m.pctMax[1]}% ${eff(m.effectiveness)}`}</td><td>${esc(m.ko)}</td><td>${m.pp}</td></tr>`).join("");
+  document.getElementById("threats").innerHTML = `<tr><th>Move</th><th>Damage to ${esc(a.me.name)}</th></tr>` +
+    a.enemyMoves.map((m) => `<tr><td>${badge(m.type)} ${esc(m.move)}</td><td>${m.category === "Status" ? "status" : `${m.pctMax[0]}–${m.pctMax[1]}% ${eff(m.effectiveness)}`}</td></tr>`).join("");
+  document.getElementById("switches").innerHTML = `<tr><th>Pokémon</th><th>Takes (worst)</th><th>Deals (best)</th></tr>` +
+    a.switches.map((s) => `<tr class="${d.advice?.action === "switch" && d.advice.choice === s.name ? "best" : ""}"><td><b>${esc(s.name)}</b> ${s.types.map(badge).join("")}<div class="meta">${s.hp} HP${s.status ? ` · <b style="color:var(--warn)">${esc(s.status.toUpperCase())}</b>` : ""}</div></td>
+      <td>${s.takesWorst ? `${s.takesWorst.pctMax[1]}% <span class="meta">${esc(s.takesWorst.move)}</span>` : "–"}</td>
+      <td>${s.bestMove ? `${s.bestMove.pctMax[1]}% <span class="meta">${esc(s.bestMove.move)}</span>` : "–"}</td></tr>`).join("");
+  const ups = Object.entries(a.enemy.boosts ?? {}).filter(([, v]) => v > 0);
+  if (ups.length) {
+    rec.insertAdjacentHTML("afterbegin", `<div style="background:var(--warn);color:#000;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-weight:700">
+      ⚠ ${esc(a.enemy.name)} IS SETTING UP (${ups.map(([k, v]) => `${esc(k.toUpperCase())} +${v}`).join(", ")}). It gets stronger every turn: KO it now or switch to a counter.</div>`);
+  }
+  if (d.nuzlocke && a.koRisk && (a.koRisk.maxRoll || a.koRisk.withCrit)) {
+    rec.insertAdjacentHTML("afterbegin", `<div style="background:var(--bad);color:#fff;border-radius:8px;padding:6px 10px;margin-bottom:10px;font-weight:700">
+      ⚠ KO RISK: ${esc(a.koRisk.move)} can knock out ${esc(a.me.name)} this turn${a.koRisk.maxRoll ? " (max roll)" : " (with a crit)"}</div>`);
+  }
+  const tp = document.getElementById("trainPanel");
+  if (d.training) {
+    tp.style.display = "";
+    const t = d.training;
+    document.getElementById("trainTitle").textContent = `Training → Lv ${t.target}`;
+    const lo = Math.min(...t.members.map((m) => m.level)) - 1;
+    document.getElementById("train").innerHTML =
+      `<div style="font-size:18px;font-weight:600;margin-bottom:8px">${esc(t.tip)}</div>` +
+      t.warnings.map((w) => `<div style="color:var(--warn)">⚠ ${esc(w)}</div>`).join("") +
+      `<table style="margin-top:6px"><tr><th>Pokémon</th><th>Level</th><th>Toward Lv ${t.target}</th><th>EXP from this KO</th></tr>` +
+      t.members.map((m) => {
+        const pct = Math.min(100, 100 * (m.level + m.progress - lo) / (t.target - lo));
+        return `<tr><td><b>${esc(m.name)}</b>${m.active ? " <span class='meta'>(out)</span>" : ""}${m.participant && !m.active ? " <span class='meta'>(full EXP)</span>" : ""}</td>
+          <td>${m.level}<span class="meta">.${Math.floor(m.progress * 10)}</span></td>
+          <td><div class="bar"><div style="width:${pct}%;background:${m.atCap ? "var(--warn)" : "var(--good)"}"></div></div></td>
+          <td>${m.participant || m.active ? `+${m.gainIfOut}` : `+${m.gainIfBench} <span class="meta">(+${m.gainIfOut} if it comes out)</span>`}</td></tr>`;
+      }).join("") + `</table>`;
+  } else tp.style.display = "none";
+  const cp = document.getElementById("catchPanel");
+  if (d.catch && d.catch.odds.length) {
+    cp.style.display = "";
+    const pct = (x) => x >= 0.995 ? "100%" : `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
+    const top = d.catch.odds[0];
+    document.getElementById("catch").innerHTML =
+      `<div style="font-size:26px;font-weight:800">${esc(top.ball)} · ${pct(top.chance)}</div>` +
+      (d.catch.levelPenalty ? `<div style="color:var(--warn);margin:4px 0">⚠ ${esc(a.enemy.name)} is higher level than ${esc(a.me.name)}: catch chance is cut ~90%. Switch to a higher-level Pokémon before throwing.</div>` : "") +
+      `<div class="meta" style="margin-top:6px">${d.catch.odds.map((o) => `${esc(o.ball)} ×${o.count}: <b style="color:var(--text)">${pct(o.chance)}</b>${o.note ? ` <i>(${esc(o.note)})</i>` : ""}`).join(" · ")}</div>` +
+      `<div class="meta">Based on the estimated HP; lower HP and sleep/paralysis raise it.</div>`;
+  } else cp.style.display = "none";
+  document.getElementById("meta").textContent =
+    `${a.iMoveFirst === true ? "You move first" : a.iMoveFirst === false ? "Enemy moves first" : "Speed tie"} · updated ${new Date(d.at).toLocaleTimeString()}` +
+    (d.advice ? ` · ${d.advice.model}, ${(d.advice.ms / 1000).toFixed(1)}s` : "");
+}
+
+const es = new EventSource("/events");
+es.onmessage = (e) => render(JSON.parse(e.data));
+</script>
+</body>
+</html>

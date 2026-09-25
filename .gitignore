@@ -1,0 +1,9 @@
+node_modules/
+.env
+dumps/
+# downloaded by `npm run setup`
+data/
+# compiled by `npm run setup`
+native/*
+!native/*.c
+!native/*.sh
