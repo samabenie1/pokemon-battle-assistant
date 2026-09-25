@@ -49,7 +49,7 @@ export function training(opts: {
     if (!sw) return false;
     const [cur, max] = sw.hp.split("/").map(Number);
     const worst = ((sw.takesWorst?.pctMax[1] ?? 0) / 100) * max;
-    return opts.nuzlocke ? cur - worst * 1.5 >= 0.4 * max : cur - worst > 0; // 1.5× covers a crit
+    return opts.nuzlocke ? cur - worst * 1.5 >= 0.5 * max : cur - worst > 0; // survive a crit with half HP left
   };
   const laggard = members
     .filter((m) => !m.active && !m.participant && !m.atCap && Number(m.hp) > 0 && safeSwitch(m.name))
@@ -57,10 +57,12 @@ export function training(opts: {
 
   let tip: string;
   const losing = active && !analysis.activeMatchup.wins;
+  const inDanger = analysis.koRisk.maxRoll || (opts.nuzlocke && analysis.koRisk.withCrit);
   if (members.every((m) => m.atCap)) tip = `Everyone is at Lv ${target}. Ready for the boss.`;
   else if (losing && active.participant)
     tip = `${active.name} has already earned full EXP by being out. Switch to ${analysis.swap?.to ?? "a safer teammate"} for the KO: ${active.name} keeps the EXP.`;
   else if (active?.atCap && laggard) tip = `${active.name} is at the Lv ${target} cap, so swap to ${laggard.name} (Lv ${laggard.level}) and let it take the EXP.`;
+  else if (inDanger) tip = `Safety first: ${active?.name ?? "your Pokémon"} is at KO risk. Follow the safe play; EXP can wait.`;
   else if (laggard && active && laggard.level < active.level) tip = `Switch ${laggard.name} (Lv ${laggard.level}) in for a turn: anyone who's been out gets full EXP (+${laggard.gainIfOut}) instead of half.`;
   else if (active && !active.atCap && !losing) tip = `${active.name} (Lv ${active.level}) is a good one to level here: +${active.gainIfOut} EXP for the KO.`;
   else tip = "No safe low-level switch-in against this Pokémon. Take the KO with whoever is safest.";

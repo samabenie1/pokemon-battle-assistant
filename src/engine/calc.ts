@@ -31,26 +31,32 @@ const STAT_ORDER = ["hp", "atk", "def", "spe", "spa", "spd"] as const; // PK8 EV
 // the calc must not leak it, e.g. via an immunity showing up as 0% damage.
 const NEUTRAL_ABILITY = "Ball Fetch";
 
-export function toCalc(m: Mon, curHPOverride?: number, hideAbility = false, withBoosts = false) {
+export function toCalc(m: Mon, curHPOverride?: number, hideAbility = false, withBoosts = false, dynamax = m.dynamax ?? false) {
   const evs: Record<string, number> = {}, ivs: Record<string, number> = {};
   STAT_ORDER.forEach((k, i) => { evs[k] = m.evs[i]; ivs[k] = m.ivs[i]; });
   const p = new Pokemon(gen, speciesName(m.species), {
     level: m.level ?? 50,
     nature: NATURES[m.nature],
     ability: hideAbility ? NEUTRAL_ABILITY : abilityName(m.ability),
+    // Slow Start (halved Atk/Spe) is active for the first 5 turns on the field: assume it's on.
+    abilityOn: !hideAbility && abilityName(m.ability) === "Slow Start",
     item: itemName(m.heldItem) || undefined,
     evs, ivs,
     status: statusOf(m.status),
     moves: m.moves.filter(Boolean).map(moveName),
+    isDynamaxed: dynamax,
     ...(withBoosts && m.boosts ? { boosts: { atk: m.boosts.atk, def: m.boosts.def, spa: m.boosts.spa, spd: m.boosts.spd, spe: m.boosts.spe } } : {}),
   });
+  // @smogon/calc doubles originalCurHP for a Dynamaxed Pokémon, while the live HP from memory is already
+  // Dynamax-scaled, so halve it back.
   const hp = curHPOverride ?? m.hp;
-  if (hp > 0 && hp <= p.maxHP()) p.originalCurHP = hp;
+  const base = dynamax ? Math.round(hp / 2) : hp;
+  if (base > 0 && base <= p.rawStats.hp) p.originalCurHP = base;
   return p;
 }
 
 function hit(att: Pokemon, def: Pokemon, move: string, field = new Field()) {
-  const mv = new Move(gen, move);
+  const mv = new Move(gen, move, { useMax: att.isDynamaxed });
   const r = calculate(gen, att, def, mv, field);
   const [lo, hi] = r.range();
   const max = def.maxHP();
@@ -59,7 +65,7 @@ function hit(att: Pokemon, def: Pokemon, move: string, field = new Field()) {
   const eff = mv.category === "Status" ? 1 : gen.types.get(mv.type.toLowerCase() as never)
     ? def.types.reduce((e, t) => e * (gen.types.get(mv.type.toLowerCase() as never)!.effectiveness[t] ?? 1), 1) : 1;
   return {
-    move, type: mv.type, category: mv.category, power: mv.bp,
+    move, maxMove: att.isDynamaxed ? mv.name : undefined, type: mv.type, category: mv.category, power: mv.bp,
     pctMax: [+(100 * lo / max).toFixed(1), +(100 * hi / max).toFixed(1)],
     ofCurrent: [lo, hi], defenderHP: def.curHP(), ko, effectiveness: eff,
   };
@@ -81,8 +87,12 @@ const SETUP: Record<string, Partial<Record<"atk" | "spa" | "spe" | "def" | "spd"
 function effSpeed(p: Pokemon) {
   const stage = p.boosts.spe ?? 0;
   const mult = stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
-  return Math.floor(p.stats.spe * mult * (p.status === "par" ? 0.5 : 1));
+  const slowStart = p.ability === "Slow Start" && p.abilityOn ? 0.5 : 1;
+  return Math.floor(p.stats.spe * mult * (p.status === "par" ? 0.5 : 1) * slowStart);
 }
+
+/** Moves a Pokémon can still use (PP left). */
+const usableMoves = (m: Mon) => m.moves.filter((mv, i) => mv && (m.pp[i] ?? 1) > 0);
 
 const nonzero = (b?: Mon["boosts"]) => (b ? Object.fromEntries(Object.entries(b).filter(([, v]) => v !== 0)) : {});
 
@@ -97,8 +107,18 @@ function matchup(mine: Hit | undefined, theirs: Hit | undefined, myHP: number, t
   return { myHits, theirHits, wins, margin: theirHits - myHits + (faster ? 0.5 : 0) - (switchingIn ? 1 : 0) };
 }
 
-/** preferLowLevel: among bench Pokémon that win the matchup, suggest the lowest level (training mode). */
-export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {}) {
+/** preferLowLevel: among bench Pokémon that win the matchup, suggest the lowest level (training mode).
+ *  dynamaxUsed: the player already Dynamaxed this battle (one per battle). */
+/** myDamageScale: observed/predicted damage ratio for my attacks on this enemy (hidden ability, Intimidate…). */
+export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number } = {}) {
+  const k = opts.myDamageScale ?? 1;
+  const scaleHit = <T extends { pctMax: number[]; ofCurrent: number[]; ko: string; defenderHP: number }>(h: T): T => {
+    if (k === 1) return h;
+    const ofCurrent = h.ofCurrent.map((x) => Math.round(x * k));
+    const pctMax = h.pctMax.map((x) => +(x * k).toFixed(1));
+    const n = ofCurrent[0] > 0 ? Math.ceil(h.defenderHP / ofCurrent[0]) : 0;
+    return { ...h, ofCurrent, pctMax, ko: n ? `${n === 1 ? "OHKO" : `${n}HKO`} (adjusted to observed damage)` : "" };
+  };
   // Boosts apply to the two Pokémon on the field; a switch-in starts neutral.
   const me = toCalc(s.me.active, undefined, false, true);
   const enemyMon = s.enemy.active;
@@ -106,9 +126,9 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {})
   const enemy = toCalc(enemyMon, undefined, hideAbility, true);
   if (s.enemy.hpPercent !== undefined) enemy.originalCurHP = Math.max(1, Math.round(enemy.maxHP() * s.enemy.hpPercent / 100));
 
-  const myMoves = s.me.active.moves.filter(Boolean).map((m, i) => ({ ...hit(me, enemy, moveName(m)), pp: s.me.active.pp[i] }))
+  const myMoves = s.me.active.moves.filter(Boolean).map((m, i) => ({ ...scaleHit(hit(me, enemy, moveName(m))), pp: s.me.active.pp[i] }))
     .sort((a, b) => b.pctMax[1] - a.pctMax[1]);
-  const enemyMoves = enemyMon.moves.filter(Boolean).map((m) => hit(enemy, me, moveName(m)))
+  const enemyMoves = usableMoves(enemyMon).map((m) => ({ ...hit(enemy, me, moveName(m)), pp: enemyMon.pp[enemyMon.moves.indexOf(m)] }))
     .sort((a, b) => b.pctMax[1] - a.pctMax[1]);
 
   // Matchup: hits each side needs to KO the other (average damage), plus speed.
@@ -116,7 +136,8 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {})
   const activeMatch = matchup(myMoves[0], enemyMoves[0], me.curHP(), enemy.curHP(), effSpeed(me) > effSpeed(enemy), false);
 
   // If the enemy can set up, a switch-in must also survive a hit after one more boost.
-  const setupMove = enemyMon.moves.filter(Boolean).map(moveName).find((mv) => SETUP[mv]);
+  // Between Pokémon (after a KO) a switch is free: no entry hit, no free setup turn for the enemy.
+  const setupMove = opts.freeSwitch ? undefined : usableMoves(enemyMon).map(moveName).find((mv) => SETUP[mv]);
   let enemyAfterSetup = enemy;
   if (setupMove) {
     enemyAfterSetup = toCalc({ ...enemyMon, boosts: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0, ...enemyMon.boosts } }, undefined, hideAbility, true);
@@ -129,10 +150,10 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {})
 
   const switches = s.me.bench.filter((m) => m.hp > 0).map((b) => {
     const bp = toCalc(b);
-    const worstNow = enemyMon.moves.filter(Boolean).map((m) => hit(enemy, bp, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
-    const worstBoosted = setupMove ? enemyMon.moves.filter(Boolean).map((m) => hit(enemyAfterSetup, bp, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0] : undefined;
+    const worstNow = usableMoves(enemyMon).map((m) => hit(enemy, bp, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
+    const worstBoosted = setupMove ? usableMoves(enemyMon).map((m) => hit(enemyAfterSetup, bp, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0] : undefined;
     const worstIn = worstBoosted && worstBoosted.pctMax[1] > (worstNow?.pctMax[1] ?? 0) ? worstBoosted : worstNow;
-    const bestOut = b.moves.filter(Boolean).map((m) => hit(bp, enemy, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
+    const bestOut = b.moves.filter(Boolean).map((m) => scaleHit(hit(bp, enemy, moveName(m)))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const st = statusOf(b.status);
     const disabled = st === "slp" || st === "frz"; // can't act after switching in
     return {
@@ -141,7 +162,7 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {})
       speed: effSpeed(bp),
       matchup: disabled
         ? { myHits: 10, theirHits: 0, wins: false, margin: -10 }
-        : matchup(bestOut, worstIn, bp.curHP(), enemy.curHP(), effSpeed(bp) > effSpeed(enemy), true),
+        : matchup(bestOut, worstIn, bp.curHP(), enemy.curHP(), effSpeed(bp) > effSpeed(enemy), !opts.freeSwitch),
     };
   });
 
@@ -151,8 +172,11 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {})
   const koRisk = { move: enemyMoves[0]?.move ?? null, maxRoll: worstMax >= myPct, withCrit: worstMax * 1.5 >= myPct };
 
   // Only suggest a swap when it clearly beats staying in.
+  // Safety first: the winning switch-in that takes the least damage; level only breaks near-ties (training mode).
+  const taken = (x: (typeof switches)[number]) => x.takesWorst?.pctMax[1] ?? 0;
   const best = [...switches].filter((x) => x.matchup.wins)
-    .sort((a, b) => (opts.preferLowLevel ? (a.level ?? 0) - (b.level ?? 0) : 0) || b.matchup.margin - a.matchup.margin)[0];
+    .sort((a, b) => (Math.abs(taken(a) - taken(b)) > 10 ? taken(a) - taken(b) : 0)
+      || (opts.preferLowLevel ? (a.level ?? 0) - (b.level ?? 0) : 0) || b.matchup.margin - a.matchup.margin)[0];
   // Enemy has no damaging moves: switching is free, so bring in the hardest hitter (chip damage
   // loses to Pain Split / Recover / screens, and there's nothing to fear).
   const enemyHarmless = enemyMoves.every((m) => m.category === "Status" || m.pctMax[1] === 0);
@@ -169,12 +193,41 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean } = {})
     : null);
 
   return {
-    me: { name: me.name, level: me.level, types: me.types, hp: me.curHP(), maxHP: me.maxHP(), ability: me.ability, item: me.item, status: me.status, speed: effSpeed(me), boosts: nonzero(s.me.active.boosts) },
-    enemy: { name: enemy.name, level: enemy.level, types: enemy.types, hp: enemy.curHP(), maxHP: enemy.maxHP(), hpPercent: Math.round(100 * enemy.curHP() / enemy.maxHP()), ability: hideAbility ? "???" : enemy.ability, status: enemy.status, speed: effSpeed(enemy), boosts: nonzero(enemyMon.boosts) },
+    me: { dynamax: me.isDynamaxed, name: me.name, level: me.level, types: me.types, hp: me.curHP(), maxHP: me.maxHP(), ability: me.ability, item: me.item, status: me.status, speed: effSpeed(me), boosts: nonzero(s.me.active.boosts) },
+    enemy: { dynamax: enemy.isDynamaxed, name: enemy.name, level: enemy.level, types: enemy.types, hp: enemy.curHP(), maxHP: enemy.maxHP(), hpPercent: Math.round(100 * enemy.curHP() / enemy.maxHP()), ability: hideAbility ? "???" : enemy.ability, status: enemy.status, speed: effSpeed(enemy), boosts: nonzero(enemyMon.boosts) },
     enemyBench: s.enemy.bench.filter((m) => m.hp > 0).map((m) => ({ name: speciesName(m.species), level: m.level })),
     iMoveFirst: effSpeed(me) > effSpeed(enemy) ? true : effSpeed(me) < effSpeed(enemy) ? false : "speed tie",
     myMoves, enemyMoves, switches, trainer: s.trainer,
-    activeMatchup: activeMatch, swap, koRisk, enemySetupMove: setupMove ?? null,
+    enemyOutOfPP: enemyMon.moves.filter((mv, i) => mv && enemyMon.pp[i] === 0).map(moveName),
+    damageScale: k, activeMatchup: activeMatch, swap, koRisk, between: !!opts.freeSwitch, enemySetupMove: setupMove ?? null,
+    dynamaxOption: me.isDynamaxed || opts.dynamaxUsed ? null : dynamaxOption(s, enemy, activeMatch, koRisk),
+  };
+}
+
+/** What Dynamaxing the active Pokémon would change: Max Move damage, and the enemy's best hit vs doubled HP. */
+function dynamaxOption(s: BattleState, enemy: Pokemon, now: { wins: boolean }, koRisk: { maxRoll: boolean; withCrit: boolean }) {
+  const dm = toCalc(s.me.active, undefined, false, true, true);
+  dm.originalCurHP = Math.min(dm.rawStats.hp, s.me.active.hp); // calc doubles it for Dynamax
+  const maxMoves = s.me.active.moves.filter(Boolean).map((m) => hit(dm, enemy, moveName(m)))
+    .filter((h) => h.category !== "Status").sort((a, b) => b.pctMax[1] - a.pctMax[1]);
+  const worstIn = usableMoves(s.enemy.active).map((m) => hit(enemy, dm, moveName(m))).sort((a, b) => b.pctMax[1] - a.pctMax[1])[0];
+  // Would Dynamax make this safe? Survive the enemy's best hit with a crit (on doubled HP), and KO within
+  // the 3 Dynamax turns with the best Max Move (average damage vs the enemy's current HP).
+  const myPct = (100 * dm.curHP()) / dm.maxHP();
+  const survives = (worstIn?.pctMax[1] ?? 0) * 1.5 < myPct;
+  const best = maxMoves[0];
+  const avgHit = best ? (best.ofCurrent[0] + best.ofCurrent[1]) / 2 : 0;
+  const hitsToKO = avgHit > 0 ? Math.ceil(enemy.curHP() / avgHit) : 99;
+  const lastFoe = s.trainer && s.enemy.bench.every((m) => m.hp <= 0);
+  const safeWin = survives && hitsToKO <= 3;
+  let recommend: string | null = null;
+  if (enemy.isDynamaxed && survives) recommend = `${enemy.name} is Dynamaxed. Match it: doubled HP means its best hit does at most ${worstIn?.pctMax[1]}%.`;
+  else if (safeWin && (!now.wins || koRisk.maxRoll || koRisk.withCrit)) recommend = `Turns a risky matchup safe: you survive ${worstIn?.move ?? "its best hit"} even with a crit, and ${best?.maxMove} KOs in ${hitsToKO}.`;
+  else if (safeWin && lastFoe) recommend = `Trainer's last Pokémon, and your Dynamax is otherwise wasted: ${best?.maxMove} KOs in ${hitsToKO} while you stay safe.`;
+  return {
+    best: best && { move: best.maxMove, from: best.move, pctMax: best.pctMax, ko: best.ko },
+    takesWorst: worstIn && { move: worstIn.maxMove ?? worstIn.move, pctMax: worstIn.pctMax, ko: worstIn.ko },
+    hitsToKO, recommend,
   };
 }
 

@@ -65,7 +65,7 @@ const dmgBar = (lo, hi) => `<div class="bar"><div style="left:0;width:${Math.min
 function mon(side, m, est) {
   const pct = Math.round(100 * m.hp / m.maxHP);
   return `<div class="panel mon"><div class="side">${side}</div>
-    <h2>${esc(m.name)} <small style="color:var(--muted);font-weight:400">Lv ${m.level}</small></h2>
+    <h2>${esc(m.name)} <small style="color:var(--muted);font-weight:400">Lv ${m.level}</small>${m.dynamax ? ` <span class="type" style="background:#d6246e">DYNAMAX</span>` : ""}</h2>
     <div class="types">${m.types.map(badge).join("")}</div>
     <div class="hpbar"><div style="width:${pct}%;background:${hpColor(pct)}"></div></div>
     <div>${est ? `~${pct}% HP <span class="meta">(estimate)</span>` : `${m.hp}/${m.maxHP} HP (${pct}%)`} ${m.status ? `· <b>${esc(m.status.toUpperCase())}</b>` : ""}</div>
@@ -96,7 +96,7 @@ function render(d) {
     `<div class="meta">Still to come: ${a.enemyBench.map((m) => `${esc(m.name)} Lv ${m.level}`).join(", ")}</div>`);
   const rec = document.getElementById("rec");
   if (d.advice) {
-    rec.innerHTML = `<div class="label">${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.action === "item" ? "USE ITEM" : "USE"}</div>
+    rec.innerHTML = `<div class="label">${a.between ? `NEXT UP: ${esc(a.enemy.name)}${a.enemy.dynamax ? " (expect Dynamax)" : ""} · ` : ""}${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.action === "item" ? "USE ITEM" : "USE"}</div>
       <div class="choice">${esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
       <div class="alt">Alternative: ${esc(d.advice.alternative)}</div>
       ${d.advice.rejected ? `<div class="meta" style="margin-top:8px">✋ ${esc(d.advice.rejected)}</div>` : ""}`;
@@ -122,13 +122,24 @@ function render(d) {
       <span class="label" style="color:var(--good)">CURE OPTION</span>
       <div style="font-size:22px;font-weight:700">${esc(d.cure.item)} on ${esc(d.cure.target)} <span class="meta">(${label}, ×${d.cure.count})</span></div></div>`);
   }
+  if (a.dynamaxOption?.recommend && !/dynamax/i.test(d.advice?.choice ?? "")) {
+    rec.insertAdjacentHTML("beforeend", `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="label" style="color:#ff5fa2">DYNAMAX NOW</span>
+      <div style="font-size:22px;font-weight:700">Dynamax ${esc(a.me.name)} → ${esc(a.dynamaxOption.best.move)}</div>
+      <div class="meta">${esc(a.dynamaxOption.recommend)}</div></div>`);
+  } else if (a.dynamaxOption?.best) {
+    const o = a.dynamaxOption;
+    rec.insertAdjacentHTML("beforeend", `<div class="meta" style="margin-top:10px">If you Dynamax: <b style="color:var(--text)">${esc(o.best.move)}</b> (from ${esc(o.best.from)}) does ${o.best.pctMax.join("–")}% ${o.best.ko ? `(${esc(o.best.ko)})` : ""}; ${esc(a.enemy.name)}'s best hit would do ${o.takesWorst?.pctMax.join("–") ?? 0}% to your doubled HP.</div>`);
+  }
   const best = d.advice?.action === "move" ? d.advice.choice : null;
-  document.getElementById("moves").innerHTML = `<tr><th>Move</th><th>Type</th><th>Damage (% max HP)</th><th></th><th>KO</th><th>PP</th></tr>` +
+  const scaleNote = a.damageScale && a.damageScale !== 1 ? `<tr><td colspan="6" class="meta">Adjusted to real hits on ${esc(a.enemy.name)}: your attacks do about ${Math.round(a.damageScale * 100)}% of the predicted damage.</td></tr>` : "";
+  document.getElementById("moves").innerHTML = scaleNote + `<tr><th>Move</th><th>Type</th><th>Damage (% max HP)</th><th></th><th>KO</th><th>PP</th></tr>` +
     a.myMoves.map((m) => `<tr class="${m.move === best ? "best" : ""}"><td><b>${esc(m.move)}</b></td><td>${badge(m.type)}</td>
       <td>${m.category === "Status" ? "<span class='meta'>status</span>" : dmgBar(...m.pctMax)}</td>
       <td>${m.category === "Status" ? "" : `${m.pctMax[0]}–${m.pctMax[1]}% ${eff(m.effectiveness)}`}</td><td>${esc(m.ko)}</td><td>${m.pp}</td></tr>`).join("");
-  document.getElementById("threats").innerHTML = `<tr><th>Move</th><th>Damage to ${esc(a.me.name)}</th></tr>` +
-    a.enemyMoves.map((m) => `<tr><td>${badge(m.type)} ${esc(m.move)}</td><td>${m.category === "Status" ? "status" : `${m.pctMax[0]}–${m.pctMax[1]}% ${eff(m.effectiveness)}`}</td></tr>`).join("");
+  document.getElementById("threats").innerHTML = `<tr><th>Move</th><th>Damage to ${esc(a.me.name)}</th><th>PP</th></tr>` +
+    a.enemyMoves.map((m) => `<tr><td>${badge(m.type)} ${esc(m.maxMove ?? m.move)}</td><td>${m.category === "Status" ? "status" : `${m.pctMax[0]}–${m.pctMax[1]}% ${eff(m.effectiveness)}`}</td><td>${m.pp ?? ""}</td></tr>`).join("") +
+    (a.enemyOutOfPP?.length ? `<tr><td colspan="3" class="meta">Out of PP (can't be used): ${a.enemyOutOfPP.map(esc).join(", ")}</td></tr>` : "");
   document.getElementById("switches").innerHTML = `<tr><th>Pokémon</th><th>Takes (worst)</th><th>Deals (best)</th></tr>` +
     a.switches.map((s) => `<tr class="${d.advice?.action === "switch" && d.advice.choice === s.name ? "best" : ""}"><td><b>${esc(s.name)}</b> ${s.types.map(badge).join("")}<div class="meta">${s.hp} HP${s.status ? ` · <b style="color:var(--warn)">${esc(s.status.toUpperCase())}</b>` : ""}</div></td>
       <td>${s.takesWorst ? `${s.takesWorst.pctMax[1]}% <span class="meta">${esc(s.takesWorst.move)}</span>` : "–"}</td>

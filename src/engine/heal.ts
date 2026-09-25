@@ -12,6 +12,14 @@ const HEALS: Record<number, { name: string; hp: number }> = {
 
 export interface Item { id: number; count: number }
 
+// Items the player says they don't actually have, even though the bag data lists them (data/ignored-items.json).
+import { readFileSync } from "node:fs";
+const ignored = (): Set<number> => {
+  try { return new Set(JSON.parse(readFileSync(new URL("../../data/ignored-items.json", import.meta.url), "utf8"))); }
+  catch { return new Set(); }
+};
+const usable = (items: Item[]) => { const skip = ignored(); return items.filter((i) => i.count > 0 && !skip.has(i.id)); };
+
 // Status cures: item id → the calc status it fixes ("any" = Full Heal and friends).
 const CURES: Record<number, { name: string; cures: string }> = {
   18: { name: "Antidote", cures: "psn" }, 19: { name: "Burn Heal", cures: "brn" }, 20: { name: "Ice Heal", cures: "frz" },
@@ -23,14 +31,14 @@ const CURES: Record<number, { name: string; cures: string }> = {
 export function cureFor(status: string, items: Item[]) {
   if (!status) return null;
   const want = status === "tox" ? "psn" : status;
-  const have = items.filter((i) => CURES[i.id] && i.count > 0).map((i) => ({ ...CURES[i.id], count: i.count }));
+  const have = usable(items).filter((i) => CURES[i.id]).map((i) => ({ ...CURES[i.id], count: i.count }));
   return have.find((c) => c.cures === want) ?? have.find((c) => c.cures === "any") ?? null;
 }
 export interface MemberHP { name: string; hp: number; maxHP: number }
 
 /** Smallest item that restores at least `need` HP (or the biggest available if none does). */
 function pick(items: Item[], need: number) {
-  const have = items.filter((i) => HEALS[i.id] && i.count > 0).map((i) => ({ ...HEALS[i.id], count: i.count }))
+  const have = usable(items).filter((i) => HEALS[i.id]).map((i) => ({ ...HEALS[i.id], count: i.count }))
     .sort((a, b) => a.hp - b.hp);
   return have.find((h) => h.hp >= need) ?? have[have.length - 1];
 }
@@ -65,5 +73,5 @@ export function topUp(team: MemberHP[], items: Item[]) {
 }
 
 export function healItems(items: Item[]) {
-  return items.filter((i) => HEALS[i.id] && i.count > 0).map((i) => ({ name: HEALS[i.id].name, count: i.count, hp: HEALS[i.id].hp }));
+  return usable(items).filter((i) => HEALS[i.id]).map((i) => ({ name: HEALS[i.id].name, count: i.count, hp: HEALS[i.id].hp }));
 }

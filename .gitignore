@@ -7,3 +7,4 @@ data/
 native/*
 !native/*.c
 !native/*.sh
+!native/*.py

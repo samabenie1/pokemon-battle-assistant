@@ -8,9 +8,16 @@ It reads the battle straight from the emulator's memory and shows a page (meant 
 - **The enemy's moves** and how hard each one hits you
 - **Switch options**: how much each bench Pokémon takes and deals back
 - **Catch chance** per throw for every ball in your bag, including the Gen 8 level penalty
-- **Swap suggestions** when a bench Pokémon has a clearly better matchup
+- **Swap suggestions** only when a bench Pokémon actually wins the matchup (switching costs a turn), including
+  a **stay-or-swap** call between an opponent's Pokémon, when switching is free
+- **Wild and trainer battles**, with the opponent's full team, live HP, PP, stat boosts, and who's on the field
+- **Dynamax** in gym battles: detection, Max Move damage, and when to use your one Dynamax
+- **Healing and status cures** from your bag, and top-up suggestions between battles
+- **Safety checks** on every AI recommendation (setup moves, stat boosts, KO risk incl. crits), with a
+  calculator fallback when the AI is slow or wrong
+- **Learns from real hits**: if your attacks do less than predicted (a hidden ability, Intimidate…), later numbers are scaled
 - Optional **training mode**: levels the team evenly toward a target level (shows who should take the EXP)
-- Optional **Nuzlocke mode**: safety-first advice with a KO-risk warning (max roll and crit)
+- Optional **Nuzlocke mode**: strict priority of no faints, then winning, then EXP
 
 It works with randomized saves: abilities and movesets are read from memory, not assumed.
 
@@ -44,8 +51,8 @@ npm start              # open http://localhost:7878
 | Wild opponent (exact species, level, ability, moves, IVs/EVs) | Wild-encounter slot ([SysBot.NET](https://github.com/kwsch/SysBot.NET) offset) |
 | Your team's live HP | Per-slot in-battle status records (fixed offset, one per party slot) |
 | Which move you just used | PP drops in the in-battle party copy |
-| Wild enemy's live HP | Its in-battle status record (same layout as the player's). Falls back to an estimate from your moves' average damage |
-| Your Pokémon on the field | A fixed "on field" record holding its species and encryption constant |
+| Opponent team (wild or trainer), live HP, PP, stat stages | Its in-battle blocks, which start at the SysBot wild slot |
+| Who's on the field (both sides) | "On-field" records (species + encryption constant), found per battle; stale copies are filtered out |
 | Turn timing | A battle step counter; advice is requested when it stops changing (the game is waiting for input) |
 | Bag (Poké Balls) | Save-block ball pouch |
 
@@ -54,8 +61,10 @@ See [docs/RESEARCH.md](docs/RESEARCH.md) for the memory layout notes and how eac
 
 ## Limitations
 
-- Trainer battles assume the trainer sends Pokémon out in order (true for in-game trainers).
-- Status conditions aren't read live yet.
+- Live status conditions (sleep, paralysis…) and field effects (screens, terrain, weather) aren't decoded yet;
+  status comes from the saved data (correct at battle start and after a switch-out).
+- Enemy abilities are hidden until you've caught that species or listed it in `data/revealed.json`
+  (`{"<species number>": "<ability>"}`), so the numbers don't give away information you wouldn't have.
 - Singles only (no doubles or Max Raids), Sword/Shield v1.3.2 only, and tested on one Linux machine.
 - Catch odds ignore critical captures (slightly conservative) and don't know if you've caught the species before (Repeat Ball).
 
@@ -66,7 +75,7 @@ Contributions welcome, especially live status conditions and double battles.
 | Variable | Default | |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | (required) | in `.env` |
-| `PBA_MODEL` | `claude-haiku-4-5` | any Claude model, e.g. `claude-sonnet-5` for stronger advice |
+| `PBA_MODEL` | `claude-haiku-4-5` | any Claude model; `claude-sonnet-5` gives noticeably better advice (~1–2¢/turn) |
 | `PBA_TARGET_LEVEL` | off | training mode: level the team evenly toward this level |
 | `PBA_NUZLOCKE` | off | `1` = never accept KO risk when a safe option exists |
 | `PBA_PORT` | `7878` | |

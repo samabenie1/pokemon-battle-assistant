@@ -1,7 +1,7 @@
 // Local web server: polls Eden's memory, serves the advice page and pushes
 // updates over SSE. PBA_SOURCE=demo shows the sample battle instead.
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { analyze, type Analysis, type BattleState } from "./engine/calc.ts";
 import { advise, type Advice } from "./engine/advisor.ts";
 import { demoState } from "./sources/demo.ts";
@@ -35,8 +35,13 @@ const setStatus = (status: Status, extra: Partial<typeof latest> = {}) => {
 let adviceSeq = 0;
 interface TeamCtx { team: Mon[]; activeEC: number; participants: Set<number> }
 
+// Observed vs predicted damage of my attacks, per enemy (EC): catches hidden abilities, Intimidate, etc.
+const damageScale = new Map<number, number>();
+let pendingHit: { foe: number; predicted: number; hpBefore: number; at: number } | null = null;
+let dynamaxAllowed = false; // this battle permits Dynamax (gym/stadium, or someone is Dynamaxed)
 async function update(state: BattleState, estimated: boolean, balls: { id: number; count: number }[] = [], team?: TeamCtx, meds: { id: number; count: number }[] = []) {
-  const analysis = analyze(state, { preferLowLevel: TARGET > 0 });
+  const analysis = analyze(state, { preferLowLevel: TARGET > 0, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: between,
+    myDamageScale: damageScale.get(state.enemy.active.ec) ?? 1 });
   const seq = ++adviceSeq;
   const e = analysis.enemy;
   const odds = balls.length && !state.trainer ? catchOdds({
@@ -80,14 +85,26 @@ let battleEC = 0;           // EC of the wild Pokémon in the current battle
 let enemyPct = 100;         // estimated enemy HP %, lowered when the player reports a move
 let lastKey = "", stableSince = 0, lastCounter = -1;
 let battleTurn = 1;
+let dynamaxUsed = false; // one Dynamax per battle
+// Persist "Dynamax used" per battle (keyed by the opponent team's ECs) so a server restart doesn't forget it.
+const BATTLE_STATE = new URL("../data/battle-state.json", import.meta.url);
+const loadDmax = (key: string) => { try { const j = JSON.parse(readFileSync(BATTLE_STATE, "utf8")); return j.key === key && j.dynamaxUsed === true; } catch { return false; } };
+const saveDmax = (key: string) => { try { writeFileSync(BATTLE_STATE, JSON.stringify({ key, dynamaxUsed: true })); } catch { /* best effort */ } };
+let between = false;      // enemy fainted, next one not out yet: switching is free
+// Dynamax only exists in gym/stadium battles (and raids). Gym leaders + Champion, by OT name.
+const DYNAMAX_TRAINERS = new Set(["Milo", "Nessa", "Kabu", "Bea", "Allister", "Opal", "Gordie", "Melony", "Raihan", "Leon"]);
 let owned = new Set<number>(); // species caught so far: their randomized ability is known
+// Abilities the player has seen revealed in battle (species number → ability name), kept across restarts.
+const REVEALED = new URL("../data/revealed.json", import.meta.url);
+const revealed = (): Record<string, string> => { try { return JSON.parse(readFileSync(REVEALED, "utf8")); } catch { return {}; } };
+const abilityKnown = (species: number) => owned.has(species) || species in revealed();
 let current: BattleState | null = null;
 
 function poll() {
   const s = reader.poll();
   if (!s) return setStatus("no-emulator");
   if (!s.inBattle) {
-    battleEC = 0; current = null; lastKey = "";
+    battleEC = 0; current = null; lastKey = ""; dynamaxUsed = false;
     // Between battles: who needs healing before the next fight (save-copy HP is current here).
     const team = s.party.map((m) => ({ name: speciesName(m.species), hp: m.hp, maxHP: toCalc(m).maxHP() }));
     return setStatus("waiting", { topUp: topUp(team, reader.medicine()) });
@@ -96,6 +113,9 @@ function poll() {
   // The opponent's on-field record says who's out; fallback: the first one still standing.
   const byRecord = s.enemyTeam.find((m) => m.ec === s.foeFieldEC && m.hp > 0);
   const foe = byRecord ?? s.enemyTeam.find((m) => m.hp > 0) ?? s.enemyTeam[0];
+  // The on-field enemy just fainted and more remain: the "switch before the next one?" moment.
+  const fainted = s.enemyTeam.find((m) => m.ec === s.foeFieldEC && m.hp === 0);
+  between = !!fainted && s.enemyTeam.some((m) => m.hp > 0);
   if (!foe && !s.wild) return setStatus("waiting");
   // A trainer's Pokémon carry the trainer's name; wild ones have no OT name yet (they do come
   // pre-stamped with the player's TID, so the ID can't be used). Catches one-Pokémon trainers.
@@ -108,21 +128,56 @@ function poll() {
   }
   const exact = foe !== undefined;
   if (s.used.length) battleTurn++;
+  // Learn from real damage: when I use an attack, compare the enemy's HP drop with the prediction.
+  if (foe && latest.analysis) {
+    const pct = (100 * foe.hp) / foe.maxHP;
+    for (const [, move] of s.used) {
+      const h = latest.analysis.myMoves.find((x) => x.move === moveName(move));
+      if (h && h.category !== "Status") pendingHit = { foe: foe.ec, predicted: (h.pctMax[0] + h.pctMax[1]) / 2 / (damageScale.get(foe.ec) ?? 1), hpBefore: latest.analysis.enemy.hpPercent, at: Date.now() };
+    }
+    if (pendingHit && pendingHit.foe === foe.ec && pct < pendingHit.hpBefore - 0.5 && pendingHit.predicted > 0) {
+      const observed = pendingHit.hpBefore - pct;
+      // Ignore capped results (a KO can't show more than the HP that was left).
+      if (pct > 0) {
+        const ratio = Math.min(2, Math.max(0.15, observed / pendingHit.predicted));
+        const prev = damageScale.get(foe.ec);
+        damageScale.set(foe.ec, prev ? (prev + ratio) / 2 : ratio);
+        console.log(`[calib] ${speciesName(foe.species)}: predicted ${pendingHit.predicted.toFixed(0)}%, observed ${observed.toFixed(0)}% → scale ${damageScale.get(foe.ec)!.toFixed(2)}`);
+      }
+      pendingHit = null;
+    } else if (pendingHit && Date.now() - pendingHit.at > 15_000) pendingHit = null;
+  }
   // In-battle party (party order, live HP); fall back to the save party.
   const team = s.battleParty.length ? s.battleParty : s.party;
   const me = team.find((m) => m.species === s.active?.species) ?? team[0];
   const enemyMon = foe ?? s.wild!;
+  // Dynamax: the live max HP roughly doubles (1.5–2×) vs the stat-computed max.
+  const isDmax = (m: Mon & { maxHP?: number }) => !!m.maxHP && m.maxHP >= 1.4 * toCalc({ ...m, dynamax: false }).maxHP();
+  const meLive = { ...me, hp: s.active?.hp ?? me.hp, maxHP: s.active?.maxHP };
+  meLive.dynamax = isDmax(meLive);
+  const battleKey = s.enemyTeam.map((m) => m.ec.toString(16)).sort().join("-") || String(s.wildEC);
+  if (!dynamaxUsed && loadDmax(battleKey)) dynamaxUsed = true;
+  // Any of my Pokémon showing Dynamax HP (on the field or its battle block) means it's been used.
+  if (meLive.dynamax || team.some((m) => isDmax(m as Mon & { maxHP?: number }))) { if (!dynamaxUsed) saveDmax(battleKey); dynamaxUsed = true; }
+  // Gym leaders Dynamax their last Pokémon: plan for it before it happens (gym battles only).
+  const dynamaxBattle = DYNAMAX_TRAINERS.has(foeMon.ot);
+  const lastOne = trainer && s.enemyTeam.filter((m) => m.hp > 0).length === 1;
+  const expectDmax = between && lastOne && dynamaxBattle;
+  const reallyDmax = isDmax(enemyMon as Mon & { maxHP?: number });
+  // Expected (not yet real) Dynamax: live HP isn't doubled yet, so double it to match the calc's Dynamax scaling.
+  const foeLive = { ...enemyMon, dynamax: expectDmax || reallyDmax, hp: expectDmax && !reallyDmax ? enemyMon.hp * 2 : enemyMon.hp };
+  dynamaxAllowed = dynamaxBattle || reallyDmax || !!meLive.dynamax;
   current = {
     trainer,
-    me: { active: { ...me, hp: s.active?.hp ?? me.hp }, bench: team.filter((m) => m !== me) },
+    me: { active: meLive, bench: team.filter((m) => m !== me) },
     enemy: exact
-      ? { active: enemyMon, bench: s.enemyTeam.filter((m) => m !== foe), abilityKnown: owned.has(enemyMon.species) }
-      : { active: enemyMon, bench: [], hpPercent: enemyPct, abilityKnown: owned.has(enemyMon.species) },
+      ? { active: foeLive, bench: s.enemyTeam.filter((m) => m !== foe), abilityKnown: abilityKnown(enemyMon.species) }
+      : { active: foeLive, bench: [], hpPercent: enemyPct, abilityKnown: abilityKnown(enemyMon.species) },
   };
   // Advise once the battle counter has settled (the game is waiting for input).
   const now = Date.now();
   if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; return; }
-  const key = `${battleEC}:${me.species}:${current.me.active.hp}:${exact ? enemyMon.hp : enemyPct}`;
+  const key = `${between}:${battleEC}:${me.species}:${current.me.active.hp}:${exact ? enemyMon.hp : enemyPct}:${meLive.dynamax}:${foeLive.dynamax}`;
   if (now - stableSince >= 800 && key !== lastKey) { lastKey = key; void update(current, !exact, reader.balls(), { team, activeEC: s.activeEC, participants: s.participants }, reader.medicine()); }
 }
 

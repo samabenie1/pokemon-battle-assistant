@@ -40,6 +40,8 @@ export interface Mon {
   evs: number[]; ivs: number[];
   /** Live in-battle stat stages (-6..+6), when read from a battle block. */
   boosts?: Boosts;
+  /** Dynamaxed right now (detected from the live max HP roughly doubling). */
+  dynamax?: boolean;
 }
 
 export interface Boosts { atk: number; def: number; spa: number; spd: number; spe: number; accuracy: number; evasion: number }
