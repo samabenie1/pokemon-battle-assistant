@@ -104,14 +104,15 @@ const SCHEMA = {
 
 export interface Advice { rejected?: string; action: "move" | "switch" | "item" | "run"; choice: string; reason: string; alternative: string; model: string; ms: number; }
 
-export async function advise(a: Analysis, extra: object = {}): Promise<Advice> {
+/** model: override for this call (e.g. a stronger model for gym battles). */
+export async function advise(a: Analysis, extra: object = {}, model = MODEL): Promise<Advice> {
   const t0 = performance.now();
   const response = await client.messages.create({
-    model: MODEL,
+    model,
     max_tokens: 4096,
     system: [{ type: "text", text: SYSTEM_FULL, cache_control: { type: "ephemeral" } }],
     // Haiku 4.5 doesn't take `effort`; newer models think adaptively, so keep it low for a fast turn.
-    output_config: MODEL.startsWith("claude-haiku-4-5")
+    output_config: model.startsWith("claude-haiku-4-5")
       ? { format: { type: "json_schema", schema: SCHEMA } }
       : { format: { type: "json_schema", schema: SCHEMA }, effort: "low" },
     messages: [{ role: "user", content: JSON.stringify({ ...a, ...extra }) }],
@@ -119,7 +120,7 @@ export async function advise(a: Analysis, extra: object = {}): Promise<Advice> {
   if (response.stop_reason === "refusal") throw new Error("advisor refused");
   const text = response.content.find((b) => b.type === "text");
   if (!text || text.type !== "text") throw new Error(`advisor: no text (stop_reason=${response.stop_reason})`);
-  return { ...JSON.parse(text.text), model: MODEL, ms: Math.round(performance.now() - t0) };
+  return { ...JSON.parse(text.text), model, ms: Math.round(performance.now() - t0) };
 }
 
 // ---- Double battles ----
@@ -148,18 +149,18 @@ const DOUBLE_SCHEMA = {
 
 export interface DoubleAdvice { actions: { pokemon: string; choice: string; target: string }[]; reason: string; model: string; ms: number }
 
-export async function adviseDouble(a: object): Promise<DoubleAdvice> {
+export async function adviseDouble(a: object, model = MODEL): Promise<DoubleAdvice> {
   const t0 = performance.now();
   const response = await client.messages.create({
-    model: MODEL,
+    model,
     max_tokens: 4096,
     system: [{ type: "text", text: DOUBLE_SYSTEM, cache_control: { type: "ephemeral" } }],
-    output_config: MODEL.startsWith("claude-haiku-4-5")
+    output_config: model.startsWith("claude-haiku-4-5")
       ? { format: { type: "json_schema", schema: DOUBLE_SCHEMA } }
       : { format: { type: "json_schema", schema: DOUBLE_SCHEMA }, effort: "low" },
     messages: [{ role: "user", content: JSON.stringify(a) }],
   }, { timeout: 12_000, maxRetries: 0 });
   const text = response.content.find((b) => b.type === "text");
   if (!text || text.type !== "text") throw new Error(`advisor: no text (stop_reason=${response.stop_reason})`);
-  return { ...JSON.parse(text.text), model: MODEL, ms: Math.round(performance.now() - t0) };
+  return { ...JSON.parse(text.text), model, ms: Math.round(performance.now() - t0) };
 }

@@ -18,6 +18,9 @@ import { dropCandidate } from "./engine/moves.ts";
 import { toCalc } from "./engine/calc.ts";
 
 const TARGET = Number(process.env.PBA_TARGET_LEVEL) || 0;
+// Stronger (pricier) model for gym leader / Champion battles only; unset = same model everywhere.
+const BOSS_MODEL = process.env.PBA_BOSS_MODEL;
+let bossBattle = false;
 const NUZLOCKE = process.env.PBA_NUZLOCKE === "1";
 
 const PORT = Number(process.env.PBA_PORT ?? 7878);
@@ -83,7 +86,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
       pokeDolls: pokeDolls(),
       ...(train ? { training: { target: train.target, tip: train.tip, members: train.members } } : {}),
       healOption: heal, cureOption: cure, healItems: healItems(meds),
-    });
+    }, bossBattle && BOSS_MODEL ? BOSS_MODEL : undefined);
     const warning = checkAdvice(advice, analysis, NUZLOCKE);
     // Never headline advice the numbers reject: show the calculator's pick and mention the rejected one.
     const shown = warning
@@ -169,7 +172,8 @@ function poll() {
     latest = { status: "battle", doubles: d, nuzlocke: NUZLOCKE, at: now };
     push();
     console.log(`[doubles] ${d.actives.map((a) => `${a.name} ${a.hp}/${a.maxHP}`).join(" + ")} vs ${d.foes.map((f) => `${f.name} ${f.hp}/${f.maxHP}`).join(" + ")}`);
-    adviseDouble(d).then((adv) => {
+    const foeOT = s.enemyTeam[0]?.ot ?? "";
+    adviseDouble(d, DYNAMAX_TRAINERS.has(foeOT) && BOSS_MODEL ? BOSS_MODEL : undefined).then((adv) => {
       if (seq !== adviceSeq) return;
       latest.doubleAdvice = adv; push();
       console.log(`[advice2] ${adv.actions.map((x) => `${x.pokemon}: ${x.choice} → ${x.target}`).join(" | ")} (${adv.ms} ms)`);
@@ -238,6 +242,7 @@ function poll() {
   // Expected (not yet real) Dynamax: live HP isn't doubled yet, so double it to match the calc's Dynamax scaling.
   const foeLive = { ...enemyMon, dynamax: expectDmax || reallyDmax, hp: expectDmax && !reallyDmax ? enemyMon.hp * 2 : enemyMon.hp };
   dynamaxAllowed = dynamaxBattle || reallyDmax || !!meLive.dynamax;
+  bossBattle = dynamaxBattle;
   current = {
     trainer,
     me: { active: meLive, bench: team.filter((m) => m !== me) },

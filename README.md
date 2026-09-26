@@ -81,6 +81,7 @@ Contributions welcome, especially live status conditions and double battles.
 |---|---|---|
 | `ANTHROPIC_API_KEY` | (required) | in `.env` |
 | `PBA_MODEL` | `claude-haiku-4-5` | any Claude model; `claude-sonnet-5` gives noticeably better advice (~1–2¢/turn) |
+| `PBA_BOSS_MODEL` | off | a stronger model used only in gym leader / Champion battles, e.g. `claude-sonnet-5` |
 | `PBA_TARGET_LEVEL` | off | training mode: level the team evenly toward this level |
 | `PBA_NUZLOCKE` | off | `1` = never accept KO risk when a safe option exists |
 | `PBA_PORT` | `7878` | |
