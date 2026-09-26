@@ -9,7 +9,7 @@
 // - Active Pokémon: slot 0 of the in-battle party; live HP from the status record just before it.
 // - Enemy live HP: NOT found yet, so the server estimates it.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, openSync, readSync, readdirSync, readlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, readlinkSync } from "node:fs";
 import { decrypt, parse, SIZE_PARTY, type Boosts, type Mon } from "../pk8.ts";
 
 const ECSCAN = new URL("../../native/ecscan", import.meta.url).pathname;
@@ -18,6 +18,8 @@ const PARTY = 0x450c68b0, WILD = 0x8fea3648, COUNTER = 0x8398a470;
 // item id = bits 0-10, count = bits 15-24 (PKHeX InventoryItem8).
 const BALL_POUCH = 0x45067b88, BALL_SLOTS = 32;
 const MEDICINE_POUCH = 0x45067a98, MEDICINE_SLOTS = 60; // same slot format, right before the balls
+// Other pouches (found by scanning the save block; same u32 slot format).
+const GENERAL_POUCH = 0x45067d90, MACHINE_POUCH = 0x45068628;
 // PC boxes (SysBot BoxStartOffset): 32 boxes × 30 slots, 0x158 bytes per slot.
 const BOXES = 0x45075880, BOX_COUNT = 32, BOX_SLOT = 0x158;
 // In-battle party, one 0x7A0-byte block per party slot (party order):
@@ -34,12 +36,16 @@ const FOE_ON_FIELD = 0x901988a0;
 // Stat stages in each battle block: 7 bytes at +0x244 (Atk, Def, SpA, SpD, Spe, Acc, Eva), 6 = neutral.
 // Verified: Oranguru's SpA went 6→8→10 with Nasty Plot; Salazzle's Atk was 7 from Intrepid Sword.
 const BOOSTS = 0x244;
+// Confusion (2 samples, both sides): +0x18E counts confused turns; the condition slot at +0x50 is filled while confused.
+const CONFUSION_TURNS = 0x18e, CONFUSION_SLOT = 0x50;
 // The wild Pokémon uses the same block layout: its status record (live HP) sits 0x4E8 before its PK8.
 const WILD_STATUS = WILD - 0x4e8;
 
 function findEden(): { pid: number; mem: string } | null {
   for (const pid of readdirSync("/proc").filter((d) => /^\d+$/.test(d))) {
     try {
+      // Only Eden itself: other processes (e.g. a research tool) can hold an old Eden's memfd open.
+      if (readFileSync(`/proc/${pid}/comm`, "utf8").trim() !== "eden") continue;
       for (const fd of readdirSync(`/proc/${pid}/fd`)) {
         if (readlinkSync(`/proc/${pid}/fd/${fd}`).startsWith("/memfd:HostMemory")) return { pid: +pid, mem: `/proc/${pid}/fd/${fd}` };
       }
@@ -66,6 +72,10 @@ export interface LiveSnapshot {
   enemyTeam: (Mon & { maxHP: number })[];
   /** EC of the opponent's Pokémon on the field, if its on-field record names a team member. */
   foeFieldEC: number | null;
+  /** Battle positions (0xF00018 apart): singles = [foe, me]; doubles = [foe, foe, me, me]. */
+  double: boolean;
+  myActives: number[];   // ECs
+  foeActives: number[];  // ECs
   /** In-battle party in party order, with live HP from the status records. */
   battleParty: BattleMon[];
   /** Moves whose PP dropped since the previous poll: [species, moveId]. */
@@ -79,6 +89,7 @@ export class LiveReader {
   private shift: number | null = null;
   private scanning = false;
   private scanAt = 0;
+  private counterWorks: number | null = null; // shift at which the battle counter was seen working
   private candidates = new Map<number, { sig: string; changedAt: number }>(); // valid battle copies
   // On-field records found by search (their fixed offsets aren't reliable across game resets).
   private myRecs: number[] = [];
@@ -100,6 +111,12 @@ export class LiveReader {
     this.fd = openSync(e.mem, "r");
     this.shift = null;
     return true;
+  }
+
+  private confused(blockAddr: number) {
+    const turns = this.read(blockAddr + CONFUSION_TURNS, 1)[0];
+    const slot = this.read(blockAddr + CONFUSION_SLOT, 1)[0];
+    return turns > 0 && turns <= 5 && slot !== 0 && slot !== 248;
   }
 
   private boosts(blockAddr: number): Boosts | undefined {
@@ -155,8 +172,17 @@ export class LiveReader {
     if (best && best[1] > 0) this.shift = best[0];
   }
 
+  private counterAt(sh: number) { return this.read((COUNTER + sh) % 0x100000000, 4).readUInt32LE(0); }
+
   private calibrate(ecs: Set<number>, partyOrder: number[]) {
     this.followLive();
+    // Among valid copies, the live battle is the one whose step counter is running: prefer it.
+    const counterOk = (sh: number) => { const c = this.counterAt(sh); return c >= 1 && c <= 0xff; };
+    if (this.shift !== null && !counterOk(this.shift)) {
+      const better = [0, ...[1, 2, 3, 4, 5, 6, 7].map((k) => k * 0x20000000), ...this.candidates.keys()]
+        .find((sh) => counterOk(sh) && this.validShift(sh, ecs));
+      if (better !== undefined) this.shift = better;
+    }
     // Re-vote every 15 s even when the current copy looks valid: it may have gone stale.
     if (this.shift !== null && this.validShift(this.shift, ecs) && Date.now() - this.scanAt < 15_000) return;
     if (this.shift === null) for (let k = 0; k < 8; k++) if (this.validShift(k * 0x20000000, ecs)) { this.shift = k * 0x20000000; break; }
@@ -183,9 +209,10 @@ export class LiveReader {
       // Biggest group; on a tie, the copy at the lowest address (live copies sat lowest in every fight so far).
       const phys = (sh: number) => (BATTLE_PARTY + sh) % 0x100000000;
       const minPhys = (g: number[]) => Math.min(...g.map(phys));
-      const pick = [...groups.values()].sort((a, b) => b.length - a.length || minPhys(a) - minPhys(b))[0]
+      const live = [...shifts].find((sh) => { const c = this.counterAt(sh); return c >= 1 && c <= 0xff; });
+      const pick = live ?? [...groups.values()].sort((a, b) => b.length - a.length || minPhys(a) - minPhys(b))[0]
         ?.sort((a, b) => phys(a) - phys(b))[0];
-      if (pick !== undefined && this.shift === null) this.shift = pick;
+      if (pick !== undefined && (this.shift === null || live !== undefined)) this.shift = pick;
       // Keep every candidate: each poll follows whichever copy changed most recently (stale ones don't change).
       const now = Date.now();
       this.candidates = new Map([...shifts].map((sh) => [sh, this.candidates.get(sh) ?? { sig: sig(sh), changedAt: 0 }]));
@@ -208,6 +235,9 @@ export class LiveReader {
 
   balls() { return this.pouch(BALL_POUCH, BALL_SLOTS); }
   medicine() { return this.pouch(MEDICINE_POUCH, MEDICINE_SLOTS); }
+  generalItems() { return this.pouch(GENERAL_POUCH, 400); }
+  battleItems() { return this.pouch(0x45067c00, 100); }
+  machines() { return this.pouch(MACHINE_POUCH, 400); }
 
   private pouch(off: number, slots: number): { id: number; count: number }[] {
     if (this.fd < 0) return [];
@@ -244,7 +274,7 @@ export class LiveReader {
     if (this.fd < 0 && !this.connect()) return null;
     const party = this.party();
     this.calibrate(this.partyECs(), party.map((m) => m.ec));
-    if (this.shift === null) return { inBattle: false, counter: 0, party, wild: null, wildEC: 0, used: [], battleParty: [], activeEC: 0, participants: new Set(), enemyTeam: [], foeFieldEC: null };
+    if (this.shift === null) return { inBattle: false, counter: 0, party, wild: null, wildEC: 0, used: [], battleParty: [], activeEC: 0, participants: new Set(), enemyTeam: [], foeFieldEC: null, double: false, myActives: [], foeActives: [] };
 
     const counter = this.read(this.at(COUNTER), 4).readUInt32LE(0);
     const wildRaw = this.read(this.at(WILD), SIZE_PARTY);
@@ -256,8 +286,13 @@ export class LiveReader {
     const foeSp = foe0.readUInt16LE(0);
     // (Weaker than the counter: these blocks can linger after a battle ends.)
     const blocksLive = this.validShift(this.shift, ecs) && foeSp > 0 && foeSp <= 898 && foe0.readUInt16LE(4) <= foe0.readUInt16LE(2);
+    // Once the step counter has been seen working at this shift, it alone decides (blocks linger after a
+    // battle ends); if it never worked here (it doesn't always move with the rest), fall back to the blocks.
+    const counterLive = counter >= 1 && counter <= 0xff;
+    if (counterLive) this.counterWorks = this.shift;
     const snap: LiveSnapshot = {
-      inBattle: (counter >= 1 && counter <= 0xff) || blocksLive,
+      // A large (garbage) counter value only appears outside battles; 0 is ambiguous.
+      inBattle: this.counterWorks === this.shift ? counterLive : counterLive || (counter === 0 && blocksLive),
       counter, party,
       wild: wd ? parse(wd) : null,
       wildEC: wildRaw.readUInt32LE(0),
@@ -267,21 +302,36 @@ export class LiveReader {
       participants: this.participants,
       enemyTeam: [],
       foeFieldEC: null,
+      double: false, myActives: [], foeActives: [],
     };
     if (!snap.inBattle) { this.lastPP.clear(); this.lastHP.clear(); this.activeEC = 0; this.participants = new Set(); snap.participants = this.participants; this.myRecs = []; this.foeRecs = []; this.recLast.clear(); return snap; }
     snap.battleParty = this.battleParty();
-    for (let i = 0; i < 6; i++) {
+    // Opponent slots 0-5 = trainer 1, 6-11 = trainer 2 (double battles against two trainers).
+    for (let i = 0; i < 12; i++) {
       const d = decrypt(this.read(this.at(WILD + i * BATTLE_STRIDE), SIZE_PARTY));
-      if (!d || !d.readUInt16LE(8)) break;
+      if (!d || !d.readUInt16LE(8)) continue;
       const m = parse(d);
       const st = this.read(this.at(WILD_STATUS + i * BATTLE_STRIDE), 6);
       const [sp, max, cur] = [st.readUInt16LE(0), st.readUInt16LE(2), st.readUInt16LE(4)];
-      if (sp !== m.species || max === 0 || cur > max) break; // not a live battle block
-      snap.enemyTeam.push({ ...m, hp: cur, maxHP: max, boosts: this.boosts(this.at(WILD_STATUS + i * BATTLE_STRIDE)) });
+      if (sp !== m.species || max === 0 || cur > max) continue; // not a live battle block
+      const blk = this.at(WILD_STATUS + i * BATTLE_STRIDE);
+      snap.enemyTeam.push({ ...m, hp: cur, maxHP: max, boosts: this.boosts(blk), confused: this.confused(blk) });
     }
     snap.foeFieldEC = this.vote(this.foeRecs, snap.enemyTeam) ?? this.resolve([this.at(FOE_ON_FIELD)], snap.enemyTeam);
     // Trainer battle without a resolvable record: search (both sides) in the background.
-    if (snap.enemyTeam.length > 1 && (snap.foeFieldEC === null || !this.myRecs.length)) this.scanRecords(snap.battleParty, snap.enemyTeam);
+    // Switches can create new records elsewhere, so re-search regularly (every ~6 s) during battles.
+    if (snap.enemyTeam.length && (snap.foeFieldEC === null || !this.myRecs.length || Date.now() - this.recScanAt > 6000))
+      this.scanRecords(snap.battleParty, snap.enemyTeam);
+    this.readPositions(snap);
+    // Battle positions are the most reliable "who's out" signal: override the older heuristics.
+    const posEC = snap.myActives[0];
+    const posMon = posEC !== undefined ? snap.battleParty.find((m) => m.ec === posEC && m.hp > 0) : undefined;
+    if (posMon && !snap.double) {
+      this.activeEC = posMon.ec;
+      snap.activeEC = posMon.ec;
+      snap.active = { species: posMon.species, hp: posMon.hp, maxHP: posMon.maxHP ?? posMon.hp };
+      this.participants.add(posMon.ec);
+    }
     if (snap.wild && snap.enemyTeam[0]?.species === snap.wild.species) snap.wildHP = { hp: snap.enemyTeam[0].hp, maxHP: snap.enemyTeam[0].maxHP };
     snap.used = this.ppDrops(snap.battleParty);
     const bp = snap.battleParty;
@@ -299,7 +349,9 @@ export class LiveReader {
     const voted = this.vote(this.myRecs, bp);
     const paired = this.resolve(this.foeRecs.map((f) => f + 0xf00018), bp);
     const changed = this.changedTo(this.myRecs, bp);
-    const switched = changed ?? voted ?? paired;
+    // Battle positions (read above) win when available; the rest are fallbacks.
+    const fromPos = !snap.double && snap.myActives[0] !== undefined && bp.some((m) => m.ec === snap.myActives[0] && m.hp > 0) ? snap.myActives[0] : null;
+    const switched = fromPos ?? changed ?? voted ?? paired;
     if (switched !== null) this.activeEC = switched;
     else if (!this.myRecs.length) { const f = this.fieldEC(bp); if (f !== null) this.activeEC = f; }
     let onField = bp.find((m) => m.ec === this.activeEC && m.hp > 0);
@@ -321,7 +373,8 @@ export class LiveReader {
       const st = this.read(this.at(STATUS + i * BATTLE_STRIDE), 8);
       const [sp, max, cur] = [st.readUInt16LE(0), st.readUInt16LE(2), st.readUInt16LE(4)];
       // Status: the PK8's (correct at battle start, only syncs on switch-out). Live status isn't decoded yet.
-      out.push(sp === m.species && cur <= max ? { ...m, hp: cur, maxHP: max, boosts: this.boosts(this.at(STATUS + i * BATTLE_STRIDE)) } : m);
+      const blk = this.at(STATUS + i * BATTLE_STRIDE);
+      out.push(sp === m.species && cur <= max ? { ...m, hp: cur, maxHP: max, boosts: this.boosts(blk), confused: this.confused(blk) } : m);
     }
     return out;
   }
@@ -350,6 +403,27 @@ export class LiveReader {
     return hit;
   }
 
+  /** Read the battle-position records starting at the first foe record (position 0). */
+  private readPositions(snap: LiveSnapshot) {
+    const STEP = 0xf00018;
+    for (const p0 of this.foeRecs) {
+      const pos = [0, 1, 2, 3].map((k) => {
+        const rec = this.read(p0 + k * STEP, 0x14), ec = rec.readUInt32LE(0x10), sp = rec.readUInt16LE(0);
+        const foe = snap.enemyTeam.find((m) => m.ec === ec && m.species === sp);
+        const mine = snap.battleParty.find((m) => m.ec === ec && m.species === sp);
+        return foe ? { side: "foe", ec } : mine ? { side: "me", ec } : null;
+      });
+      if (pos[0]?.side !== "foe") continue;
+      if (pos[1]?.side === "foe" && pos[2]?.side === "me") {
+        snap.double = true;
+        snap.foeActives = [pos[0].ec, pos[1].ec];
+        snap.myActives = [pos[2].ec, pos[3]?.side === "me" ? pos[3].ec : null].filter((x): x is number => x !== null);
+        return;
+      }
+      if (pos[1]?.side === "me") { snap.foeActives = [pos[0].ec]; snap.myActives = [pos[1].ec]; return; }
+    }
+  }
+
   /** Majority of the records that name a Pokémon in `team`. */
   private vote(recs: number[], team: Mon[]): number | null {
     const votes = new Map<number, number>();
@@ -369,7 +443,7 @@ export class LiveReader {
 
   /** Background search for on-field records: [u16 species … u32 EC at +0x10] naming either side's Pokémon. */
   private scanRecords(mine: Mon[], foes: Mon[]) {
-    if (this.recScanning || Date.now() - this.recScanAt < 3000) return;
+    if (this.recScanning || Date.now() - this.recScanAt < 2500) return;
     this.recScanning = true;
     this.recScanAt = Date.now();
     const all = [...mine, ...foes];

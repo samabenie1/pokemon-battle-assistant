@@ -53,8 +53,10 @@ Trainer Pokémon carry the trainer's OT name.
 SysBot's `InBattleRaidOffsetSW` (0x3F128624) read as 0 at every shift in Eden, so the step counter is used instead.
 
 ## Open problems
-- **Live status conditions** (sleep, paralysis, burn…): not decoded. Bytes near block +0x3E0 change around status events
-  but don't map cleanly. `native/blockwatch.py` logs byte-level changes in all battle blocks, so pair it with reported events.
+- **Live status conditions:** partly decoded. The battle block holds a condition list around +0x28..+0x68: 8-byte entries
+  `[code, turns, …]`, with 248 marking an empty slot. Seen so far: 98 = confusion, 97 = probably paralysis. +0x18E counted
+  confused turns, and +0x398 holds the last move that hit the Pokémon. Burn, poison and sleep codes are still needed;
+  `native/blockwatch.py` logs byte-level changes so they can be matched to reported events.
 - **Field conditions** (weather, terrain, Reflect/Light Screen): not located.
 - **Double battles and Max Raids:** not investigated.
 

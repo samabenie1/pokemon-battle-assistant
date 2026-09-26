@@ -46,6 +46,14 @@ enemy.active (the NEXT one) comes in. Switching now is free (no hit taken). Answ
 or action "move" with choice "Stay" (keep the current Pokémon in), based on the matchup against the incoming Pokémon.
 If the incoming one is a trainer's last Pokémon it's assumed to Dynamax (enemy.dynamax true), so plan for that.
 
+Wild battles: run is always available (run.chance = escape odds; a Poké Doll always escapes). Recommend action "run"
+(choice "Run", or "Poké Doll" if run.chance < 1 and pokeDolls > 0) when my Pokémon is at KO risk and no switch wins, or
+when the fight is risky and not worth it. Don't run if the player might want to catch it and it's safe to weaken it.
+Trainer battles have run = null: never suggest running.
+
+Confusion: me.confused / enemy.confused. A confused Pokémon hits itself instead of attacking about 1/3 of the time
+(for 2-5 turns). A confused enemy is less of a threat; if mine is confused and at risk, switching cures it.
+
 Status rules: if me.status is "slp" (asleep) or "frz" (frozen), my active Pokémon almost certainly CAN'T attack this turn,
 so a move recommendation is wasted unless it wakes up. Prefer curing (cureOption) or switching. Paralysis ("par") halves
 speed and gives a 25% chance to lose the turn.
@@ -85,7 +93,7 @@ const SYSTEM_FULL = RUN_RULES ? `${SYSTEM}\n\n${RUN_RULES}` : SYSTEM;
 const SCHEMA = {
   type: "object",
   properties: {
-    action: { type: "string", enum: ["move", "switch", "item"] },
+    action: { type: "string", enum: ["move", "switch", "item", "run"] },
     choice: { type: "string", description: "Exact move name, the Pokémon to switch to, e.g. 'Super Potion on Zamazenta', or 'Dynamax: Max Quake'" },
     reason: { type: "string" },
     alternative: { type: "string", description: "Second-best option in a few words" },
@@ -94,7 +102,7 @@ const SCHEMA = {
   additionalProperties: false,
 } as const;
 
-export interface Advice { rejected?: string; action: "move" | "switch" | "item"; choice: string; reason: string; alternative: string; model: string; ms: number; }
+export interface Advice { rejected?: string; action: "move" | "switch" | "item" | "run"; choice: string; reason: string; alternative: string; model: string; ms: number; }
 
 export async function advise(a: Analysis, extra: object = {}): Promise<Advice> {
   const t0 = performance.now();
@@ -109,6 +117,48 @@ export async function advise(a: Analysis, extra: object = {}): Promise<Advice> {
     messages: [{ role: "user", content: JSON.stringify({ ...a, ...extra }) }],
   }, { timeout: 12_000, maxRetries: 0 }); // a late answer is useless mid-battle; the server falls back
   if (response.stop_reason === "refusal") throw new Error("advisor refused");
+  const text = response.content.find((b) => b.type === "text");
+  if (!text || text.type !== "text") throw new Error(`advisor: no text (stop_reason=${response.stop_reason})`);
+  return { ...JSON.parse(text.text), model: MODEL, ms: Math.round(performance.now() - t0) };
+}
+
+// ---- Double battles ----
+const DOUBLE_SYSTEM = `You are a Pokémon Sword battle coach for an in-game DOUBLE battle (2 of mine vs 2 opponents).
+The player's save is randomized: abilities and movesets are unusual, but types and base stats are standard.
+You get damage-calculator output as JSON. actives[] = my two Pokémon; for each: moves[] with damage % vs each foe
+(vs[].pctMax, vs[].ko = KOs this turn), spread = hits both foes (already reduced for doubles), hitsAlly = also hits my
+partner (e.g. Earthquake, Surf); threats[] = each foe's best move vs it; koRisk.single / koRisk.focused (both foes on it).
+picks[] is a calculator suggestion. ${process.env.PBA_NUZLOCKE === "1" ? "This is a NUZLOCKE: a faint is permanent. Safety first, then winning, then EXP." : ""}
+Choose one action per active Pokémon: a move and its target (a foe's name, "both foes" for spread moves), or "switch to X".
+Prefer KOing the biggest threat first; focus both attacks on one foe if that KOs it; never use a move that could KO my
+partner; if one of mine is at focused KO risk and slower, consider switching it or protecting it.
+The reason must be one short sentence citing numbers.`;
+
+const DOUBLE_SCHEMA = {
+  type: "object",
+  properties: {
+    actions: { type: "array", items: { type: "object", properties: {
+      pokemon: { type: "string" }, choice: { type: "string", description: "Move name or 'switch to X'" }, target: { type: "string" },
+    }, required: ["pokemon", "choice", "target"], additionalProperties: false } },
+    reason: { type: "string" },
+  },
+  required: ["actions", "reason"],
+  additionalProperties: false,
+} as const;
+
+export interface DoubleAdvice { actions: { pokemon: string; choice: string; target: string }[]; reason: string; model: string; ms: number }
+
+export async function adviseDouble(a: object): Promise<DoubleAdvice> {
+  const t0 = performance.now();
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 4096,
+    system: [{ type: "text", text: DOUBLE_SYSTEM, cache_control: { type: "ephemeral" } }],
+    output_config: MODEL.startsWith("claude-haiku-4-5")
+      ? { format: { type: "json_schema", schema: DOUBLE_SCHEMA } }
+      : { format: { type: "json_schema", schema: DOUBLE_SCHEMA }, effort: "low" },
+    messages: [{ role: "user", content: JSON.stringify(a) }],
+  }, { timeout: 12_000, maxRetries: 0 });
   const text = response.content.find((b) => b.type === "text");
   if (!text || text.type !== "text") throw new Error(`advisor: no text (stop_reason=${response.stop_reason})`);
   return { ...JSON.parse(text.text), model: MODEL, ms: Math.round(performance.now() - t0) };

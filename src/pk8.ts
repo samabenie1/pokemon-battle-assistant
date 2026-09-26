@@ -40,6 +40,8 @@ export interface Mon {
   evs: number[]; ivs: number[];
   /** Live in-battle stat stages (-6..+6), when read from a battle block. */
   boosts?: Boosts;
+  /** Confused right now (battle block: +0x18E confusion-turn counter / +0x50 condition slot). */
+  confused?: boolean;
   /** Dynamaxed right now (detected from the live max HP roughly doubling). */
   dynamax?: boolean;
 }

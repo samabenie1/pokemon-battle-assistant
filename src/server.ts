@@ -3,7 +3,8 @@
 import http from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
 import { analyze, type Analysis, type BattleState } from "./engine/calc.ts";
-import { advise, type Advice } from "./engine/advisor.ts";
+import { advise, adviseDouble, type Advice, type DoubleAdvice } from "./engine/advisor.ts";
+import { analyzeDouble, type DoubleAnalysis } from "./engine/doubles.ts";
 import { demoState } from "./sources/demo.ts";
 import { LiveReader } from "./sources/live.ts";
 import { moveName, speciesName } from "./names.ts";
@@ -12,6 +13,8 @@ import { training, type Training } from "./engine/training.ts";
 import type { Mon } from "./pk8.ts";
 import { battleHeal, cureFor, healItems, topUp } from "./engine/heal.ts";
 import { checkAdvice, fallbackAdvice } from "./engine/safety.ts";
+import { bagTips } from "./engine/items.ts";
+import { dropCandidate } from "./engine/moves.ts";
 import { toCalc } from "./engine/calc.ts";
 
 const TARGET = Number(process.env.PBA_TARGET_LEVEL) || 0;
@@ -23,11 +26,14 @@ const page = new URL("../public/index.html", import.meta.url);
 
 type Status = "no-emulator" | "waiting" | "trainer" | "battle";
 let latest: { status: Status; analysis?: Analysis; advice?: Advice; error?: string; estimated?: boolean; catch?: ReturnType<typeof catchOdds>; training?: Training; nuzlocke?: boolean;
-  heal?: ReturnType<typeof battleHeal>; cure?: { item: string; count: number; target: string; status: string } | null; topUp?: ReturnType<typeof topUp>; at: number } = { status: "waiting", at: Date.now() };
+  heal?: ReturnType<typeof battleHeal>; bagTips?: string[];
+  levelUp?: ReturnType<typeof dropCandidate> & { level: number; at: number };
+  doubles?: DoubleAnalysis; doubleAdvice?: DoubleAdvice; cure?: { item: string; count: number; target: string; status: string } | null; topUp?: ReturnType<typeof topUp>; at: number } = { status: "waiting", at: Date.now() };
 const clients = new Set<http.ServerResponse>();
 const push = () => { for (const c of clients) c.write(`data: ${JSON.stringify(latest)}\n\n`); };
 const setStatus = (status: Status, extra: Partial<typeof latest> = {}) => {
-  const changed = latest.status !== status || latest.analysis || JSON.stringify(extra.topUp) !== JSON.stringify(latest.topUp);
+  const changed = latest.status !== status || latest.analysis || JSON.stringify(extra.topUp) !== JSON.stringify(latest.topUp)
+    || JSON.stringify(extra.bagTips) !== JSON.stringify(latest.bagTips);
   if (changed) { latest = { status, ...extra, at: Date.now() }; push(); }
 };
 
@@ -38,6 +44,9 @@ interface TeamCtx { team: Mon[]; activeEC: number; participants: Set<number> }
 // Observed vs predicted damage of my attacks, per enemy (EC): catches hidden abilities, Intimidate, etc.
 const damageScale = new Map<number, number>();
 let pendingHit: { foe: number; predicted: number; hpBefore: number; at: number } | null = null;
+let tips: string[] = [], tipsAt = 0;
+// Poké Dolls in the battle-items pouch (guaranteed escape from wild battles).
+const pokeDolls = () => { try { return reader.battleItems().find((i) => i.id === 63)?.count ?? 0; } catch { return 0; } };
 let dynamaxAllowed = false; // this battle permits Dynamax (gym/stadium, or someone is Dynamaxed)
 async function update(state: BattleState, estimated: boolean, balls: { id: number; count: number }[] = [], team?: TeamCtx, meds: { id: number; count: number }[] = []) {
   const analysis = analyze(state, { preferLowLevel: TARGET > 0, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: between,
@@ -58,8 +67,20 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   const cure = c && { item: c.name, count: c.count, target: analysis.me.name, status: analysis.me.status };
   latest = { status: "battle", analysis, estimated, catch: odds, training: train, nuzlocke: NUZLOCKE, heal, cure, at: Date.now() };
   push(); // numbers show immediately; advice follows a few seconds later
+  // Obvious turns don't need the AI (saves API cost): a KO that lands before the enemy moves, or a safe,
+  // winning matchup with no KO risk and no better switch. The calculator's pick is shown directly.
+  const sureKO = analysis.iMoveFirst === true && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp);
+  const easy = !analysis.between && !analysis.swap && !analysis.koRisk.maxRoll && !analysis.koRisk.withCrit
+    && analysis.activeMatchup.wins && !Object.values(analysis.enemy.boosts ?? {}).some((v) => (v as number) > 0) && !analysis.dynamaxOption?.recommend;
+  if (sureKO || easy) {
+    const fb = fallbackAdvice(analysis, NUZLOCKE);
+    if (seq === adviceSeq) { latest.advice = { ...fb, model: "calculator (obvious turn, no AI call)" }; push(); }
+    console.log(`[advice] (no AI: ${sureKO ? "sure KO" : "easy"}) ${fb.action} ${fb.choice}: ${fb.reason}`);
+    return;
+  }
   try {
     const advice = await advise(analysis, {
+      pokeDolls: pokeDolls(),
       ...(train ? { training: { target: train.target, tip: train.tip, members: train.members } } : {}),
       healOption: heal, cureOption: cure, healItems: healItems(meds),
     });
@@ -100,16 +121,66 @@ const revealed = (): Record<string, string> => { try { return JSON.parse(readFil
 const abilityKnown = (species: number) => owned.has(species) || species in revealed();
 let current: BattleState | null = null;
 
+// Level-up watcher: when a party member's level goes up, say which move to forget if it wants a new one.
+const levels = new Map<number, number>();
+let levelUp: (ReturnType<typeof dropCandidate> & { level: number; at: number }) | null = null;
+function watchLevels(team: Mon[]) {
+  for (const m of team) {
+    const prev = levels.get(m.ec), lv = m.level ?? 0;
+    if (prev !== undefined && lv > prev) {
+      const d = dropCandidate(m);
+      if (d) { levelUp = { ...d, level: lv, at: Date.now() }; console.log(`[levelup] ${d.pokemon} → Lv ${lv}; if offered a move, drop ${d.drop}`); }
+    }
+    levels.set(m.ec, lv);
+  }
+  if (levelUp && Date.now() - levelUp.at > 120_000) levelUp = null;
+}
+
 function poll() {
   const s = reader.poll();
   if (!s) return setStatus("no-emulator");
+  watchLevels(s.inBattle && s.battleParty.length ? s.battleParty : s.party);
+  // (Level-up banner removed from the page at Sam's request; the watcher only logs now.)
   if (!s.inBattle) {
     battleEC = 0; current = null; lastKey = ""; dynamaxUsed = false;
     // Between battles: who needs healing before the next fight (save-copy HP is current here).
     const team = s.party.map((m) => ({ name: speciesName(m.species), hp: m.hp, maxHP: toCalc(m).maxHP() }));
-    return setStatus("waiting", { topUp: topUp(team, reader.medicine()) });
+    // Bag tips (held items, candies, TMs) between battles; recomputed at most every 30 s.
+    if (Date.now() - tipsAt > 30_000) {
+      try { tips = bagTips(s.party, reader.generalItems(), reader.machines(), TARGET || 100); } catch (e) { console.log("[bag]", (e as Error).message); }
+      tipsAt = Date.now();
+    }
+    return setStatus("waiting", { topUp: topUp(team, reader.medicine()), bagTips: tips });
   }
   // The opponent's party blocks start at the wild slot: 1 Pokémon for wild battles, more for trainers.
+  // ---- Double battles: separate analysis and advice ----
+  if (s.double) {
+    const byEC = (list: Mon[], ec: number) => list.find((m) => m.ec === ec);
+    const mine = s.myActives.map((ec) => byEC(s.battleParty, ec)).filter((m): m is Mon => !!m && m.hp > 0);
+    const foes = s.foeActives.map((ec) => byEC(s.enemyTeam, ec)).filter((m): m is Mon => !!m && m.hp > 0);
+    if (!mine.length || !foes.length) return;
+    const key = `D:${mine.map((m) => `${m.ec}:${m.hp}`).join(",")}|${foes.map((m) => `${m.ec}:${m.hp}`).join(",")}`;
+    const now = Date.now();
+    if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; }
+    if (key === lastKey || now - stableSince < 800) return;
+    lastKey = key;
+    const d = analyzeDouble({ mine, foes, bench: s.battleParty.filter((m) => !s.myActives.includes(m.ec)), abilityKnown }, NUZLOCKE);
+    const seq = ++adviceSeq;
+    latest = { status: "battle", doubles: d, nuzlocke: NUZLOCKE, at: now };
+    push();
+    console.log(`[doubles] ${d.actives.map((a) => `${a.name} ${a.hp}/${a.maxHP}`).join(" + ")} vs ${d.foes.map((f) => `${f.name} ${f.hp}/${f.maxHP}`).join(" + ")}`);
+    adviseDouble(d).then((adv) => {
+      if (seq !== adviceSeq) return;
+      latest.doubleAdvice = adv; push();
+      console.log(`[advice2] ${adv.actions.map((x) => `${x.pokemon}: ${x.choice} → ${x.target}`).join(" | ")} (${adv.ms} ms)`);
+    }).catch((e) => {
+      if (seq !== adviceSeq) return;
+      latest.doubleAdvice = { actions: d.picks.map((p) => ({ pokemon: p.pokemon, choice: p.move, target: p.target })), reason: "Calculator pick (AI unavailable).", model: "calculator", ms: 0 };
+      push(); console.log(`[advice2] fallback: ${(e as Error).message}`);
+    });
+    return;
+  }
+
   // The opponent's on-field record says who's out; fallback: the first one still standing.
   const byRecord = s.enemyTeam.find((m) => m.ec === s.foeFieldEC && m.hp > 0);
   const foe = byRecord ?? s.enemyTeam.find((m) => m.hp > 0) ?? s.enemyTeam[0];

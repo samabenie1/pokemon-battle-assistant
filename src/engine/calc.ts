@@ -55,7 +55,7 @@ export function toCalc(m: Mon, curHPOverride?: number, hideAbility = false, with
   return p;
 }
 
-function hit(att: Pokemon, def: Pokemon, move: string, field = new Field()) {
+export function hit(att: Pokemon, def: Pokemon, move: string, field = new Field()) {
   const mv = new Move(gen, move, { useMax: att.isDynamaxed });
   const r = calculate(gen, att, def, mv, field);
   const [lo, hi] = r.range();
@@ -84,7 +84,7 @@ const SETUP: Record<string, Partial<Record<"atk" | "spa" | "spe" | "def" | "spd"
 };
 
 /** Speed after stat stages and paralysis (what decides who moves first). */
-function effSpeed(p: Pokemon) {
+export function effSpeed(p: Pokemon) {
   const stage = p.boosts.spe ?? 0;
   const mult = stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
   const slowStart = p.ability === "Slow Start" && p.abilityOn ? 0.5 : 1;
@@ -92,7 +92,7 @@ function effSpeed(p: Pokemon) {
 }
 
 /** Moves a Pokémon can still use (PP left). */
-const usableMoves = (m: Mon) => m.moves.filter((mv, i) => mv && (m.pp[i] ?? 1) > 0);
+export const usableMoves = (m: Mon) => m.moves.filter((mv, i) => mv && (m.pp[i] ?? 1) > 0);
 
 const nonzero = (b?: Mon["boosts"]) => (b ? Object.fromEntries(Object.entries(b).filter(([, v]) => v !== 0)) : {});
 
@@ -110,7 +110,7 @@ function matchup(mine: Hit | undefined, theirs: Hit | undefined, myHP: number, t
 /** preferLowLevel: among bench Pokémon that win the matchup, suggest the lowest level (training mode).
  *  dynamaxUsed: the player already Dynamaxed this battle (one per battle). */
 /** myDamageScale: observed/predicted damage ratio for my attacks on this enemy (hidden ability, Intimidate…). */
-export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number } = {}) {
+export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number; runAttempts?: number } = {}) {
   const k = opts.myDamageScale ?? 1;
   const scaleHit = <T extends { pctMax: number[]; ofCurrent: number[]; ko: string; defenderHP: number }>(h: T): T => {
     if (k === 1) return h;
@@ -193,13 +193,18 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     : null);
 
   return {
-    me: { dynamax: me.isDynamaxed, name: me.name, level: me.level, types: me.types, hp: me.curHP(), maxHP: me.maxHP(), ability: me.ability, item: me.item, status: me.status, speed: effSpeed(me), boosts: nonzero(s.me.active.boosts) },
-    enemy: { dynamax: enemy.isDynamaxed, name: enemy.name, level: enemy.level, types: enemy.types, hp: enemy.curHP(), maxHP: enemy.maxHP(), hpPercent: Math.round(100 * enemy.curHP() / enemy.maxHP()), ability: hideAbility ? "???" : enemy.ability, status: enemy.status, speed: effSpeed(enemy), boosts: nonzero(enemyMon.boosts) },
+    me: { confused: !!s.me.active.confused, dynamax: me.isDynamaxed, name: me.name, level: me.level, types: me.types, hp: me.curHP(), maxHP: me.maxHP(), ability: me.ability, item: me.item, status: me.status, speed: effSpeed(me), boosts: nonzero(s.me.active.boosts) },
+    enemy: { confused: !!enemyMon.confused, dynamax: enemy.isDynamaxed, name: enemy.name, level: enemy.level, types: enemy.types, hp: enemy.curHP(), maxHP: enemy.maxHP(), hpPercent: Math.round(100 * enemy.curHP() / enemy.maxHP()), ability: hideAbility ? "???" : enemy.ability, status: enemy.status, speed: effSpeed(enemy), boosts: nonzero(enemyMon.boosts) },
     enemyBench: s.enemy.bench.filter((m) => m.hp > 0).map((m) => ({ name: speciesName(m.species), level: m.level })),
     iMoveFirst: effSpeed(me) > effSpeed(enemy) ? true : effSpeed(me) < effSpeed(enemy) ? false : "speed tie",
     myMoves, enemyMoves, switches, trainer: s.trainer,
     enemyOutOfPP: enemyMon.moves.filter((mv, i) => mv && enemyMon.pp[i] === 0).map(moveName),
-    damageScale: k, activeMatchup: activeMatch, swap, koRisk, between: !!opts.freeSwitch, enemySetupMove: setupMove ?? null,
+    damageScale: k, activeMatchup: activeMatch, swap, koRisk,
+    // Wild battles: escape odds (Gen 3+): always if at least as fast, else (A×128/B + 30×attempts)/256.
+    run: s.trainer ? null : (() => {
+      const A = effSpeed(me), B = effSpeed(enemy);
+      return { chance: A >= B ? 1 : Math.min(1, (Math.floor((A * 128) / Math.max(1, B)) + 30 * ((opts.runAttempts ?? 0) + 1)) / 256) };
+    })(), between: !!opts.freeSwitch, enemySetupMove: setupMove ?? null,
     dynamaxOption: me.isDynamaxed || opts.dynamaxUsed ? null : dynamaxOption(s, enemy, activeMatch, koRisk),
   };
 }

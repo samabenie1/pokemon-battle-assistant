@@ -42,6 +42,11 @@ export function fallbackAdvice(a: Analysis, nuzlocke: boolean): Advice {
     return { ...base, action: "move", choice: `Dynamax: ${a.dynamaxOption.best.move}`, reason: a.dynamaxOption.recommend, alternative: a.myMoves[0]?.move ?? "–" };
   if (ko) return { ...base, action: "move", choice: ko.move, reason: `${ko.move} KOs before ${a.enemy.name} can move (${ko.pctMax[0]}%+ vs ${a.enemy.hpPercent}% left).`, alternative: "–" };
   const danger = a.koRisk.maxRoll || (nuzlocke && a.koRisk.withCrit);
+  const winning = a.switches.filter((s) => s.matchup.wins && !switchKills(a, s.name, nuzlocke));
+  // Wild battle in danger with no winning switch: just leave.
+  if (danger && !winning.length && a.run)
+    return { ...base, action: "run", choice: a.run.chance >= 1 ? "Run" : "Poké Doll",
+      reason: `${a.me.name} is at KO risk and no switch wins; ${a.run.chance >= 1 ? "you're faster, so running always works" : `running is only ${Math.round(a.run.chance * 100)}% here, a Poké Doll always escapes`}.`, alternative: "Run" };
   const safe = a.switches
     .filter((s) => !switchKills(a, s.name, nuzlocke) && s.matchup.wins) // a switch that can't win just loses turns
     .sort((x, y) => (x.takesWorst?.pctMax[1] ?? 0) - (y.takesWorst?.pctMax[1] ?? 0))[0];
@@ -61,6 +66,7 @@ export function fallbackAdvice(a: Analysis, nuzlocke: boolean): Advice {
 /** Returns a warning when the advice contradicts the numbers, or null if it checks out. */
 export function checkAdvice(adv: Advice, a: Analysis, nuzlocke: boolean): string | null {
   if (a.between && adv.choice === "Stay") return null;
+  if (adv.action === "run") return a.run ? null : "You can't run from a trainer battle.";
   if (adv.action === "switch" && !a.between) {
     const k = switchKills(a, adv.choice, nuzlocke);
     // If staying in is a sure KO, a switch-in that survives a normal (non-crit) hit is still the better bet.
