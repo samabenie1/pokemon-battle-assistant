@@ -87,7 +87,7 @@ See [docs/RESEARCH.md](docs/RESEARCH.md) for the memory layout notes and how eac
 - TM/TR compatibility can't be known in randomized saves, so TM tips say "if it can learn it".
 - Enemy abilities are hidden until you've caught that species or listed it in `data/revealed.json`
   (`{"<species number>": "<ability>"}`), so the numbers don't give away information you wouldn't have.
-- Singles only (no doubles or Max Raids), Sword/Shield v1.3.2 only, and tested on one Linux machine.
+- No Max Raids; Sword/Shield v1.3.2 and Black 2 (see above) only, and tested on one Linux machine.
 - Catch odds ignore critical captures (slightly conservative) and don't know if you've caught the species before (Repeat Ball).
 
 Contributions welcome, especially live status conditions and double battles.
