@@ -1,0 +1,173 @@
+// Live battle state for Pokémon Black 2 / White 2 running in melonDS (PBA_GAME=b2).
+// Produces the same LiveSnapshot the Sword/Shield reader does, so the server and engine are shared.
+//
+// Layout (NDS-Ironmon-Tracker offsets, verified in melonDS on 09-30 in a wild battle):
+// - Party: *MAIN_POINTER + 0x19728, 6 × 220-byte PK5 (overworld copy; HP there is current between battles).
+// - In battle, *MAIN_POINTER + 0x526A8 holds 7 battler pointers per side (player at +i*4, enemy at +0x1C + i*4).
+//   The first entries are the Pokémon on the field (1 in singles, 2 in doubles). Each battler struct has live
+//   HP (+0x10, max +0x0E), stats, stat stages (+0xFC: Atk Def SpA SpD Spe Acc Eva, 6 = neutral) and moves with
+//   live PP (+0x104, 14 bytes each), plus a pointer to its PK5 at +0.
+// - The enemy's own PK5 party copy (+0x53B70) keeps its battle-start HP, so live HP always comes from battlers.
+// - Bag (PKHeX SAV5 pouch layout): items pouch at +0x18D20 (310 × u16 id, u16 count), medicine at +0x194F8 (48).
+import { MelonDS } from "../reader/melonds.ts";
+import { B2 } from "../offsets/b2.ts";
+import { decrypt, parse, SIZE_PARTY } from "../pk5.ts";
+import type { Boosts, Mon } from "../pk8.ts";
+import type { BattleMon, LiveSnapshot } from "./live.ts";
+
+const BATTLERS_PER_SIDE = 7;
+const ITEMS_POUCH = 0x18d20, ITEMS_SLOTS = 310;
+const MEDICINE_POUCH = 0x194f8, MEDICINE_SLOTS = 48;
+const BALL_IDS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 492, 493, 494, 495, 496, 497, 498, 499, 576]);
+
+export class B2Reader {
+  private ds = new MelonDS();
+  private base = 0;
+  private lastPP = new Map<number, number[]>(); // by PID
+  private participants = new Set<number>();
+  private sig = "";
+  private counter = 0;
+  private inBattle = false;
+
+  private connected() {
+    if (this.ds.pid && this.base) {
+      try {
+        // Still the same melonDS process with a Black 2 / White 2 cartridge loaded?
+        if (this.ds.u32(0x3ffe0c) === Buffer.from(this.ds.gameCode, "latin1").readUInt32LE(0)) {
+          this.base = this.ds.ptr(B2.MAIN_POINTER);
+          if (this.base) return true;
+        }
+      } catch { /* melonDS closed */ }
+    }
+    if (!this.ds.connect() || !B2.gameCodes[this.ds.gameCode]) return false;
+    this.base = this.ds.ptr(B2.MAIN_POINTER);
+    return this.base !== 0;
+  }
+
+  private pkm(off: number): Mon | null {
+    if (!off) return null;
+    const d = decrypt(this.ds.bytes(off, SIZE_PARTY));
+    if (!d) return null;
+    const m = parse(d);
+    return m.species > 0 && m.species <= 649 ? m : null;
+  }
+
+  /** One battler: its PK5 plus the live battle values (HP, moves/PP, stat stages). */
+  private battler(b: number): BattleMon | null {
+    if (!b) return null;
+    const bt = B2.battler;
+    const m = this.pkm(this.ds.ptr(b + bt.pkm));
+    if (!m) return null;
+    const maxHP = this.ds.u16(b + bt.maxHP), hp = this.ds.u16(b + bt.curHP);
+    if (!maxHP || hp > maxHP) return null;
+    const moves: number[] = [], pp: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const o = b + bt.moves + i * bt.moveStride;
+      moves.push(this.ds.u16(o));
+      pp.push(this.ds.u8(o + 2));
+    }
+    const st = this.ds.bytes(b + bt.statStages, 7);
+    const boosts: Boosts | undefined = [...st].every((x) => x <= 12)
+      ? { atk: st[0] - 6, def: st[1] - 6, spa: st[2] - 6, spd: st[3] - 6, spe: st[4] - 6, accuracy: st[5] - 6, evasion: st[6] - 6 }
+      : undefined;
+    return { ...m, hp, maxHP, moves: moves.some(Boolean) ? moves : m.moves, pp: moves.some(Boolean) ? pp : m.pp, boosts };
+  }
+
+  private side(offset: number): BattleMon[] {
+    const out: BattleMon[] = [];
+    const seen = new Set<number>();
+    for (let i = 0; i < BATTLERS_PER_SIDE; i++) {
+      const b = this.ds.ptr(this.base + B2.mainBattleDataPtr + offset + i * 4);
+      if (!b) break;
+      const m = this.battler(b);
+      if (m && !seen.has(m.ec)) { seen.add(m.ec); out.push(m); }
+    }
+    return out;
+  }
+
+  private party(): Mon[] {
+    const count = Math.min(6, this.ds.u32(this.base + B2.partyCount));
+    const party: Mon[] = [];
+    for (let i = 0; i < count; i++) {
+      const m = this.pkm(this.base + B2.party + i * SIZE_PARTY);
+      if (m) party.push(m);
+    }
+    return party;
+  }
+
+  poll(): (LiveSnapshot & { trainer: boolean }) | null {
+    if (!this.connected()) return null;
+    const party = this.party();
+    const status = this.ds.u16(B2.battleStatus);
+    const inBattle = status === 0x2100 || status === 0x2101;
+    const empty = {
+      inBattle: false, counter: 0, party, wild: null, wildEC: 0, activeEC: 0, participants: new Set<number>(), enemyTeam: [],
+      foeFieldEC: null, double: false, myActives: [], foeActives: [], battleParty: [], used: [], trainer: false,
+    };
+    if (!inBattle) {
+      if (this.inBattle) { this.participants.clear(); this.lastPP.clear(); }
+      this.inBattle = false;
+      return empty;
+    }
+    this.inBattle = true;
+
+    const mine = this.side(0);
+    const foes = this.side(B2.enemyBattlerOffset);
+    if (!mine.length || !foes.length) return { ...empty, inBattle: true }; // battle still setting up
+
+    // Doubles: the first two battlers of each side are on the field. Triple/rotation battles are
+    // read as doubles (the first two), which is the best the engine supports.
+    const flag = this.ds.u8(this.base + B2.doubleTripleFlag);
+    const nActive = flag === 0 ? 1 : 2;
+    const double = nActive === 2 && mine.length >= 2 && foes.length >= 2;
+    const me = mine[0];
+    this.participants.add(me.ec);
+    if (double) this.participants.add(mine[1].ec);
+
+    // Moves I just used: PP drops on my Pokémon on the field.
+    const used: [number, number][] = [];
+    for (const m of mine.slice(0, nActive)) {
+      const prev = this.lastPP.get(m.ec);
+      if (prev) m.pp.forEach((p, i) => { if (m.moves[i] && p < prev[i]) used.push([m.species, m.moves[i]]); });
+      this.lastPP.set(m.ec, [...m.pp]);
+    }
+
+    // No battle step counter is known for Gen 5: "counter" changes whenever the visible battle state does,
+    // so the server waits until it's been still for a moment (the game waiting for input) before advising.
+    const sig = [...mine, ...foes].map((m) => `${m.ec}:${m.hp}:${m.pp.join(",")}:${Object.values(m.boosts ?? {}).join(",")}`).join("|");
+    if (sig !== this.sig) { this.sig = sig; this.counter = (this.counter + 1) & 0xff || 1; }
+
+    return {
+      inBattle: true, counter: this.counter, party, wild: null, wildEC: 0,
+      active: { species: me.species, hp: me.hp, maxHP: me.maxHP! },
+      activeEC: me.ec, participants: new Set(this.participants),
+      enemyTeam: foes as (Mon & { maxHP: number })[],
+      foeFieldEC: foes[0].ec,
+      double, myActives: double ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: double ? [foes[0].ec, foes[1].ec] : [foes[0].ec],
+      battleParty: mine, used,
+      trainer: this.ds.u16(this.base + B2.enemyTrainerID) !== 0,
+    };
+  }
+
+  private pouch(off: number, slots: number) {
+    const buf = this.ds.bytes(this.base + off, slots * 4);
+    const out: { id: number; count: number }[] = [];
+    for (let i = 0; i < slots; i++) {
+      const id = buf.readUInt16LE(i * 4), count = buf.readUInt16LE(i * 4 + 2);
+      if (id === 0) break;
+      if (count > 0 && count <= 999) out.push({ id, count });
+    }
+    return out;
+  }
+
+  balls() { return this.pouch(ITEMS_POUCH, ITEMS_SLOTS).filter((i) => BALL_IDS.has(i.id)); }
+  medicine() { return this.pouch(MEDICINE_POUCH, MEDICINE_SLOTS); }
+  battleItems() { return this.pouch(ITEMS_POUCH, ITEMS_SLOTS); } // Poké Doll (63) lives in the items pouch
+  // Bag tips are built on Sword/Shield data (TMs, Exp. Candies), so they're off for Black 2.
+  generalItems() { return []; }
+  machines() { return []; }
+  /** Species whose (randomized) ability the player knows: the current party. PC boxes aren't read yet. */
+  ownedSpecies() {
+    return new Set(this.connected() ? this.party().map((m) => m.species) : []);
+  }
+}

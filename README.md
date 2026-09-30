@@ -1,4 +1,4 @@
-# Pokémon Battle Assistant (Sword/Shield on Eden)
+# Pokémon Battle Assistant (Sword/Shield on Eden, Black 2 on melonDS)
 
 A live battle advisor for **Pokémon Sword/Shield** running in the **[Eden](https://eden-emu.dev) Switch emulator on Linux**.
 It reads the battle straight from the emulator's memory and shows a page (meant for a second monitor) with:
@@ -47,6 +47,23 @@ npm start              # open http://localhost:7878
 
 `npm run demo` shows a sample battle without the emulator.
 
+## Black 2 / White 2 (melonDS)
+
+The same advisor also runs against **Pokémon Black 2** in standalone [melonDS](https://melonds.kuribo64.net) (1.1, tested with the Flathub build):
+
+```sh
+PBA_TARGET_LEVEL=20 npm run b2   # Gen 5 rules, Nuzlocke mode on
+```
+
+- Reads DS main RAM live from melonDS's shared-memory file (`/proc/<pid>/fd` → `melondsfastmem`), with no pause, root or Lua.
+  Offsets come from the [NDS-Ironmon-Tracker](https://github.com/besteon/NDS-Ironmon-Tracker); Gen 5 PK5 decryption follows PKHeX.
+- Party (with nicknames), wild and trainer battles, live HP/PP/stat stages on both sides, Gen 5 catch odds and EXP rules (no Exp. Share).
+- **Level-up move advice**: when the game offers a new move, the page says which move to forget (or to skip it), and
+  lists what each Pokémon learns next. Uses standard B2W2 learnsets, so it assumes learnsets aren't randomized.
+- Works with randomized ROMs (e.g. Universal Pokémon Randomizer ZX): abilities are read from memory.
+- Not yet: doubles verification, live status conditions, bag/TM tips, PC boxes. `node --import tsx src/tools/b2-peek.ts`
+  prints what the reader sees.
+
 ## How it works
 
 | What | Where it comes from |
@@ -84,6 +101,7 @@ Contributions welcome, especially live status conditions and double battles.
 | `PBA_BOSS_MODEL` | off | a stronger model used only in gym leader / Champion battles, e.g. `claude-sonnet-5` |
 | `PBA_TARGET_LEVEL` | off | training mode: level the team evenly toward this level |
 | `PBA_NUZLOCKE` | off | `1` = never accept KO risk when a safe option exists |
+| `PBA_GAME` | `swsh` | `b2` = Black 2 in melonDS (`npm run b2` sets it) |
 | `PBA_PORT` | `7878` | |
 | `PBA_SOURCE` | live | `demo` for the sample battle |
 

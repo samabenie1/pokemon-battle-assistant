@@ -76,7 +76,7 @@ function mon(side, m, est) {
 
 const post = (u) => fetch(u, { method: "POST" });
 const STATUS = {
-  "no-emulator": "Eden isn't running (or Sword isn't loaded).",
+  "no-emulator": "The emulator isn't running, or the game isn't loaded (Eden for Sword, melonDS for Black 2).",
   "waiting": "Waiting for a battle…",
 };
 function renderDoubles(d) {
@@ -101,13 +101,17 @@ function renderDoubles(d) {
   document.getElementById("rec").insertAdjacentHTML("beforeend", grid + foes);
 }
 
+// Level-up move offers: a box only when the game is asking right now; upcoming ones as one small line.
 function levelUpBox(d) {
-  return ""; // removed: Sam found the level-up banner annoying and unhelpful
-  const L = d.levelUp;
-  return L ? `<div style="margin-top:12px;padding:10px;border-radius:8px;background:rgba(62,207,142,.12);border:1px solid var(--good)">
-    <span class="label" style="color:var(--good)">LEVEL UP · ${esc(L.pokemon)} → Lv ${L.level}</span>
-    <div>If it wants to learn a new move, forget <b>${esc(L.drop)}</b> (${esc(L.why)}).</div>
-    <div class="meta">Least to most useful: ${L.ranking.map(esc).join(" → ")}</div></div>` : "";
+  const tips = d.newMoves ?? [];
+  const now = tips.filter((t) => t.when === "now"), next = tips.filter((t) => t.when === "next");
+  const advice = (t) => t.skip ? `<b>don't learn it</b>` : t.forget ? `forget <b>${esc(t.forget)}</b>` : `learns it (free slot)`;
+  const box = now.map((t) => `<div style="margin-top:12px;padding:10px;border-radius:8px;background:rgba(62,207,142,.12);border:1px solid var(--good)">
+    <span class="label" style="color:var(--good)">NEW MOVE · ${esc(t.pokemon)} Lv ${t.level} wants ${esc(t.move)}</span>
+    <div style="font-size:22px;font-weight:800;margin-top:4px">${t.skip ? `Don't learn ${esc(t.move)}` : t.forget ? `Forget ${esc(t.forget)} → learn ${esc(t.move)}` : `Learns ${esc(t.move)} (free slot)`}</div>
+    <div class="meta">${esc(t.why)}</div></div>`).join("");
+  const line = next.length ? `<div class="meta" style="margin-top:10px">Coming up: ${next.map((t) => `${esc(t.pokemon.split(" (")[0])} Lv ${t.level} ${esc(t.move)} → ${advice(t)}`).join(" · ")}</div>` : "";
+  return box + line;
 }
 
 function render(d) {
@@ -131,7 +135,10 @@ function render(d) {
   if (a.enemyBench.length) document.querySelectorAll("#versus .mon")[1].insertAdjacentHTML("beforeend",
     `<div class="meta">Still to come: ${a.enemyBench.map((m) => `${esc(m.name)} Lv ${m.level}`).join(", ")}</div>`);
   const rec = document.getElementById("rec");
-  if (d.advice) {
+  if (d.nextOptions) {
+    rec.innerHTML = `<div class="label">NEXT POKÉMON NOT OUT YET · READ ITS NAME IN-GAME</div>` +
+      d.nextOptions.map((o) => `<div style="margin-top:10px"><div style="font-size:26px;font-weight:800">If ${esc(o.foe)}: ${o.action === "switch" ? "switch to " : ""}${esc(o.choice)}</div><div class="meta">${esc(o.reason)}</div></div>`).join("");
+  } else if (d.advice) {
     rec.innerHTML = `<div class="label">${a.between ? `NEXT UP: ${esc(a.enemy.name)}${a.enemy.dynamax ? " (expect Dynamax)" : ""} · ` : ""}${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.action === "item" ? "USE ITEM" : d.advice.action === "run" ? "RUN AWAY" : "USE"}</div>
       <div class="choice">${esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
       <div class="alt">Alternative: ${esc(d.advice.alternative)}</div>

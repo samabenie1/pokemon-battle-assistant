@@ -1,14 +1,17 @@
 // Healing suggestions from the medicine pouch: in battle (when it beats attacking or
 // switching) and between battles (top the team up before the next fight).
 import type { Analysis } from "./calc.ts";
+import { GAME } from "../game.ts";
 
-// HP restored per item (Gen 8). Revives are never suggested (fainted = gone in a Nuzlocke).
+// HP restored per item (Gen 8; Gen 5 values patched below). Revives are never suggested (fainted = gone in a Nuzlocke).
 const HEALS: Record<number, { name: string; hp: number }> = {
   17: { name: "Potion", hp: 20 }, 26: { name: "Super Potion", hp: 60 }, 25: { name: "Hyper Potion", hp: 120 },
   24: { name: "Max Potion", hp: 9999 }, 23: { name: "Full Restore", hp: 9999 }, 30: { name: "Fresh Water", hp: 30 },
   31: { name: "Soda Pop", hp: 50 }, 32: { name: "Lemonade", hp: 70 }, 33: { name: "Moomoo Milk", hp: 100 },
   34: { name: "Energy Powder", hp: 60 }, 35: { name: "Energy Root", hp: 120 },
 };
+// Gen 5 (Black 2): these heal different amounts than in Gen 7+.
+if (GAME.gen === 5) for (const [id, hp] of [[26, 50], [25, 200], [30, 50], [31, 60], [32, 80], [34, 50], [35, 200]]) HEALS[id].hp = hp;
 
 export interface Item { id: number; count: number }
 

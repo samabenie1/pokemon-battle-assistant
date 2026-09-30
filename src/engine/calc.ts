@@ -1,11 +1,12 @@
 // Deterministic battle math: turn a BattleState into damage ranges, KO odds,
-// speed order and switch-in safety using @smogon/calc (Gen 8 rules).
+// speed order and switch-in safety using @smogon/calc (the game's generation rules, see game.ts).
 import { calculate, Generations, Move, Pokemon, Field } from "@smogon/calc";
 import type { StatusName } from "@smogon/calc/dist/data/interface.js";
-import { NATURES, abilityName, itemName, moveName, speciesName } from "../names.ts";
+import { NATURES, abilityName, itemName, monLabel, moveName, speciesName } from "../names.ts";
 import type { Mon } from "../pk8.ts";
+import { GAME } from "../game.ts";
 
-const gen = Generations.get(8);
+const gen = Generations.get(GAME.gen);
 
 export interface Side { active: Mon; bench: Mon[]; }
 export interface BattleState {
@@ -31,10 +32,27 @@ const STAT_ORDER = ["hp", "atk", "def", "spe", "spa", "spd"] as const; // PK8 EV
 // the calc must not leak it, e.g. via an immunity showing up as 0% damage.
 const NEUTRAL_ABILITY = "Ball Fetch";
 
+// PK8 form index → Showdown forme. Showdown lists otherFormes alphabetically, so species with several
+// forms need the game's order; a single alternate forme is unambiguous.
+const FORMS: Record<string, string[]> = {
+  Meowth: ["Alola", "Galar"], Darmanitan: ["Zen", "Galar", "Galar-Zen"], Slowbro: ["Mega", "Galar"],
+  Rotom: ["Heat", "Wash", "Frost", "Fan", "Mow"], Lycanroc: ["Midnight", "Dusk"],
+};
+// Species the calc only knows by a forme name (no plain entry): the battle-start forme.
+const DEFAULT_FORME: Record<string, string> = { Aegislash: "Aegislash-Shield" };
+export function calcSpecies(m: Mon) {
+  const base = speciesName(m.species);
+  if (DEFAULT_FORME[base]) return DEFAULT_FORME[base];
+  if (!m.form) return base;
+  if (FORMS[base]) return FORMS[base][m.form - 1] ? `${base}-${FORMS[base][m.form - 1]}` : base;
+  const formes = gen.species.get(base.toLowerCase().replace(/[^a-z0-9]/g, "") as never)?.otherFormes ?? [];
+  return formes.length === 1 && m.form === 1 ? formes[0] : base;
+}
+
 export function toCalc(m: Mon, curHPOverride?: number, hideAbility = false, withBoosts = false, dynamax = m.dynamax ?? false) {
   const evs: Record<string, number> = {}, ivs: Record<string, number> = {};
   STAT_ORDER.forEach((k, i) => { evs[k] = m.evs[i]; ivs[k] = m.ivs[i]; });
-  const p = new Pokemon(gen, speciesName(m.species), {
+  const p = new Pokemon(gen, calcSpecies(m), {
     level: m.level ?? 50,
     nature: NATURES[m.nature],
     ability: hideAbility ? NEUTRAL_ABILITY : abilityName(m.ability),
@@ -157,7 +175,7 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     const st = statusOf(b.status);
     const disabled = st === "slp" || st === "frz"; // can't act after switching in
     return {
-      name: speciesName(b.species), level: b.level, hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
+      name: monLabel(b), level: b.level, hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
       takesWorst: worstIn && { move: worstIn.move, pctMax: worstIn.pctMax }, bestMove: bestOut && { move: bestOut.move, pctMax: bestOut.pctMax, ko: bestOut.ko },
       speed: effSpeed(bp),
       matchup: disabled
@@ -182,18 +200,18 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const enemyHarmless = enemyMoves.every((m) => m.category === "Status" || m.pctMax[1] === 0);
   const hitter = enemyHarmless ? [...switches].sort((x, y) => (y.bestMove?.pctMax[0] ?? 0) - (x.bestMove?.pctMax[0] ?? 0))[0] : undefined;
   const freeSwap = hitter && (hitter.bestMove?.pctMax[0] ?? 0) > (myMoves[0]?.pctMax[0] ?? 0) * 1.5
-    ? { to: hitter.name, reason: `${enemy.name} has no damaging moves, so switching is free: ${hitter.name}'s ${hitter.bestMove?.move} does ${hitter.bestMove?.pctMax.join("–")}% vs ${me.name}'s best ${myMoves[0]?.pctMax.join("–")}%.` }
+    ? { to: hitter.name, reason: `${enemy.name} has no damaging moves, so switching is free: ${hitter.name}'s ${hitter.bestMove?.move} does ${hitter.bestMove?.pctMax.join("–")}% vs ${monLabel(s.me.active)}'s best ${myMoves[0]?.pctMax.join("–")}%.` }
     : null;
   const swap = freeSwap ?? (best && (!activeMatch.wins || best.matchup.margin >= activeMatch.margin + 2)
     ? {
       to: best.name,
       reason: `${best.name} takes ${best.takesWorst?.pctMax[1] ?? 0}% from ${best.takesWorst?.move ?? "its attacks"} and KOs in ${best.matchup.myHits} hit${best.matchup.myHits > 1 ? "s" : ""} with ${best.bestMove?.move}` +
-        (activeMatch.wins ? "" : `; ${me.name} is likely KO'd first (${activeMatch.theirHits} hit${activeMatch.theirHits > 1 ? "s" : ""} vs ${activeMatch.myHits} needed)`),
+        (activeMatch.wins ? "" : `; ${monLabel(s.me.active)} is likely KO'd first (${activeMatch.theirHits} hit${activeMatch.theirHits > 1 ? "s" : ""} vs ${activeMatch.myHits} needed)`),
     }
     : null);
 
   return {
-    me: { confused: !!s.me.active.confused, dynamax: me.isDynamaxed, name: me.name, level: me.level, types: me.types, hp: me.curHP(), maxHP: me.maxHP(), ability: me.ability, item: me.item, status: me.status, speed: effSpeed(me), boosts: nonzero(s.me.active.boosts) },
+    me: { confused: !!s.me.active.confused, dynamax: me.isDynamaxed, name: monLabel(s.me.active), level: me.level, types: me.types, hp: me.curHP(), maxHP: me.maxHP(), ability: me.ability, item: me.item, status: me.status, speed: effSpeed(me), boosts: nonzero(s.me.active.boosts) },
     enemy: { confused: !!enemyMon.confused, dynamax: enemy.isDynamaxed, name: enemy.name, level: enemy.level, types: enemy.types, hp: enemy.curHP(), maxHP: enemy.maxHP(), hpPercent: Math.round(100 * enemy.curHP() / enemy.maxHP()), ability: hideAbility ? "???" : enemy.ability, status: enemy.status, speed: effSpeed(enemy), boosts: nonzero(enemyMon.boosts) },
     enemyBench: s.enemy.bench.filter((m) => m.hp > 0).map((m) => ({ name: speciesName(m.species), level: m.level })),
     iMoveFirst: effSpeed(me) > effSpeed(enemy) ? true : effSpeed(me) < effSpeed(enemy) ? false : "speed tie",
@@ -205,7 +223,7 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
       const A = effSpeed(me), B = effSpeed(enemy);
       return { chance: A >= B ? 1 : Math.min(1, (Math.floor((A * 128) / Math.max(1, B)) + 30 * ((opts.runAttempts ?? 0) + 1)) / 256) };
     })(), between: !!opts.freeSwitch, enemySetupMove: setupMove ?? null,
-    dynamaxOption: me.isDynamaxed || opts.dynamaxUsed ? null : dynamaxOption(s, enemy, activeMatch, koRisk),
+    dynamaxOption: !GAME.dynamax || me.isDynamaxed || opts.dynamaxUsed ? null : dynamaxOption(s, enemy, activeMatch, koRisk),
   };
 }
 

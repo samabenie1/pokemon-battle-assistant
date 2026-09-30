@@ -1,11 +1,12 @@
 // Turns the calculator's numbers into one recommended action via Claude.
 import Anthropic from "@anthropic-ai/sdk";
 import type { Analysis } from "./calc.ts";
+import { GAME } from "../game.ts";
 
 const client = new Anthropic();
 const MODEL = process.env.PBA_MODEL ?? "claude-haiku-4-5";
 
-const SYSTEM = `You are a Pokémon Sword battle coach for an in-game (single-player, singles) playthrough.
+const SYSTEM = `You are a Pokémon ${GAME.name} battle coach for an in-game (single-player, singles) playthrough.
 The player's save is randomized: abilities and movesets are unusual, but types and base stats are standard.
 You get exact damage-calculator output for this turn as JSON:
 - myMoves: my active Pokémon's moves vs the enemy, with % of the enemy's max HP (pctMax) and KO chance
@@ -88,7 +89,13 @@ const RUN_RULES = [
   If the safest play uses a high-level Pokémon, pick the safe play.
 - training.tip is a deterministic suggestion for this. Follow it unless safety says otherwise.`,
 ].filter(Boolean).join("\n\n");
-const SYSTEM_FULL = RUN_RULES ? `${SYSTEM}\n\n${RUN_RULES}` : SYSTEM;
+// Gen 5 (Black 2): no Dynamax, and its type chart / crit rules differ from Gen 8.
+const SYSTEM_GAME = GAME.dynamax ? SYSTEM : SYSTEM
+  .replace(/\nDynamax:[\s\S]*?\n\n/, "\n\n")
+  .replace(/\nIf the incoming one is a trainer's last Pokémon[^\n]*/, "")
+  + `\n\nThis is Gen 5 (Pokémon ${GAME.name}): there is no Dynamax, no Fairy type, Steel resists Ghost and Dark, and crits do 2× damage.`
+  + " The numbers already use Gen 5 rules.";
+export const SYSTEM_FULL = RUN_RULES ? `${SYSTEM_GAME}\n\n${RUN_RULES}` : SYSTEM_GAME;
 
 const SCHEMA = {
   type: "object",
@@ -124,15 +131,18 @@ export async function advise(a: Analysis, extra: object = {}, model = MODEL): Pr
 }
 
 // ---- Double battles ----
-const DOUBLE_SYSTEM = `You are a Pokémon Sword battle coach for an in-game DOUBLE battle (2 of mine vs 2 opponents).
+const DOUBLE_SYSTEM = `You are a Pokémon ${GAME.name} battle coach for an in-game DOUBLE battle (2 of mine vs 2 opponents).
 The player's save is randomized: abilities and movesets are unusual, but types and base stats are standard.
 You get damage-calculator output as JSON. actives[] = my two Pokémon; for each: moves[] with damage % vs each foe
 (vs[].pctMax, vs[].ko = KOs this turn), spread = hits both foes (already reduced for doubles), hitsAlly = also hits my
 partner (e.g. Earthquake, Surf); threats[] = each foe's best move vs it; koRisk.single / koRisk.focused (both foes on it).
 picks[] is a calculator suggestion. ${process.env.PBA_NUZLOCKE === "1" ? "This is a NUZLOCKE: a faint is permanent. Safety first, then winning, then EXP." : ""}
 Choose one action per active Pokémon: a move and its target (a foe's name, "both foes" for spread moves), or "switch to X".
-Prefer KOing the biggest threat first; focus both attacks on one foe if that KOs it; never use a move that could KO my
-partner; if one of mine is at focused KO risk and slower, consider switching it or protecting it.
+Prefer KOing the biggest threat first; focus both attacks on one foe if that KOs it.
+NEVER use a move whose hitsAlly damage is above 0% (Lava Plume, Earthquake, Surf... hurt my partner); 0% means the partner is immune.
+danger[i] = true means actives[i] can be KO'd by a FASTER foe before it moves (or by both foes together): switch it out
+to a switchIns[] entry with safe = true (switchIns[].focused = % it takes if both foes hit it). Only attack instead if
+that attack KOs every foe that threatens it before they move. Paralysis halves speed and costs 25% of turns.
 The reason must be one short sentence citing numbers.`;
 
 const DOUBLE_SCHEMA = {

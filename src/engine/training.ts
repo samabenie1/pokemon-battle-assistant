@@ -1,16 +1,23 @@
 // Training mode: level the team evenly up to a target (e.g. the next boss / Nuzlocke cap).
 // Sword/Shield's Exp. Share is always on: Pokémon that were on the field at any point
-// get full EXP, the rest of the party gets half.
+// get full EXP, the rest of the party gets half. Black 2 (Gen 5) has no party-wide Exp. Share:
+// the EXP is split between the Pokémon that were out, and the bench gets none.
 import { readFileSync } from "node:fs";
 import { expForLevel, type Mon } from "../pk8.ts";
-import { speciesName } from "../names.ts";
+import { monLabel } from "../names.ts";
 import type { Analysis } from "./calc.ts";
+import { GAME } from "../game.ts";
 
 const BASE_EXP = JSON.parse(readFileSync(new URL("../../data/baseexp.json", import.meta.url), "utf8")) as Record<string, number>;
 
-/** Gen 8 (scaled) EXP formula for one Pokémon. */
+/** Scaled EXP formula (Gen 5 and Gen 7+) for one Pokémon. Gen 5: only participants get EXP (assumes it's the only one out). */
 function expGain(enemySpecies: number, enemyLevel: number, myLevel: number, participant: boolean, trainer: boolean) {
   const b = BASE_EXP[enemySpecies] ?? 100;
+  if (!GAME.expShareAll) {
+    if (!participant) return 0;
+    const base = Math.floor(((trainer ? 1.5 : 1) * b * enemyLevel) / 5);
+    return Math.floor(base * Math.pow((2 * enemyLevel + 10) / (enemyLevel + myLevel + 10), 2.5)) + 1;
+  }
   const scaled = ((b * enemyLevel) / 5) * (participant ? 1 : 0.5) * Math.pow((2 * enemyLevel + 10) / (enemyLevel + myLevel + 10), 2.5);
   return Math.floor((Math.floor(scaled) + 1) * (trainer ? 1.5 : 1));
 }
@@ -35,7 +42,7 @@ export function training(opts: {
     const levelsIfOut = lvAfter - lv + (lvAfter < 100 ? (exp - expForLevel(m.species, lvAfter)) / (expForLevel(m.species, lvAfter + 1) - expForLevel(m.species, lvAfter)) : 0)
       - (m.exp - cur) / (next - cur);
     return {
-      ec: m.ec, name: speciesName(m.species), level: lv, progress: next > cur ? (m.exp - cur) / (next - cur) : 1, hp: `${m.hp}`,
+      ec: m.ec, name: monLabel(m), level: lv, progress: next > cur ? (m.exp - cur) / (next - cur) : 1, hp: `${m.hp}`,
       gainIfOut, gainIfBench: expGain(opts.enemySpecies, opts.enemyLevel, lv, false, opts.trainer), levelsIfOut: Math.round(levelsIfOut * 100) / 100,
       atCap: lv >= target, nearCap: lv >= target - 1, participant: opts.participants.has(m.ec), active: m.ec === opts.activeEC,
     };
@@ -63,12 +70,14 @@ export function training(opts: {
     tip = `${active.name} has already earned full EXP by being out. Switch to ${analysis.swap?.to ?? "a safer teammate"} for the KO: ${active.name} keeps the EXP.`;
   else if (active?.atCap && laggard) tip = `${active.name} is at the Lv ${target} cap, so swap to ${laggard.name} (Lv ${laggard.level}) and let it take the EXP.`;
   else if (inDanger) tip = `Safety first: ${active?.name ?? "your Pokémon"} is at KO risk. Follow the safe play; EXP can wait.`;
-  else if (laggard && active && laggard.level < active.level) tip = `Switch ${laggard.name} (Lv ${laggard.level}) in for a turn: anyone who's been out gets full EXP (+${laggard.gainIfOut}) instead of half.`;
+  else if (laggard && active && laggard.level < active.level) tip = GAME.expShareAll
+    ? `Switch ${laggard.name} (Lv ${laggard.level}) in for a turn: anyone who's been out gets full EXP (+${laggard.gainIfOut}) instead of half.`
+    : `Switch ${laggard.name} (Lv ${laggard.level}) in for a turn: only Pokémon that were out get EXP (split between them, up to +${laggard.gainIfOut}).`;
   else if (active && !active.atCap && !losing) tip = `${active.name} (Lv ${active.level}) is a good one to level here: +${active.gainIfOut} EXP for the KO.`;
   else tip = "No safe low-level switch-in against this Pokémon. Take the KO with whoever is safest.";
 
   const warnings = members.filter((m) => m.nearCap).map((m) => m.atCap
-    ? `${m.name} is at Lv ${m.level} (cap ${target}). It still gets half EXP from the bench.`
+    ? `${m.name} is at Lv ${m.level} (cap ${target}). ${GAME.expShareAll ? "It still gets half EXP from the bench." : "Keep it off the field so it gets no EXP."}`
     : `${m.name} is 1 level from the cap.`);
 
   return {

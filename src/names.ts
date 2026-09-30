@@ -23,6 +23,12 @@ const abilities = byNum(js("abilities.js", "BattleAbilities"));
 const items = byNum(js("items.js", "BattleItems"));
 
 export const speciesName = (n: number) => species.get(n) ?? `#${n}`;
+/** How to refer to one of the player's Pokémon: "Nickname (Species)" when it has a nickname. */
+export const monLabel = (m: { species: number; nickname?: string }) =>
+  m.nickname && m.nickname.toLowerCase() !== speciesName(m.species).toLowerCase() ? `${m.nickname} (${speciesName(m.species)})` : speciesName(m.species);
+/** Does `said` (e.g. an AI answer "Chompy" or "Drapion") name the Pokémon labelled `label` ("Chompy (Drapion)")? */
+export const sameMon = (label: string, said: string) =>
+  label === said || label.startsWith(`${said} (`) || label.endsWith(`(${said})`);
 export const moveName = (n: number) => (n ? moves.get(n) ?? `move#${n}` : "");
 export const abilityName = (n: number) => abilities.get(n) ?? `ability#${n}`;
 export const itemName = (n: number) => (n ? items.get(n) ?? `item#${n}` : "");

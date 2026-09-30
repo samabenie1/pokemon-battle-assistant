@@ -7,7 +7,8 @@
     "setup": "bash scripts/setup.sh",
     "start": "node --env-file=.env --import tsx src/server.ts",
     "demo": "PBA_SOURCE=demo node --env-file=.env --import tsx src/server.ts",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "b2": "PBA_GAME=b2 PBA_NUZLOCKE=1 node --env-file=.env --import tsx src/server.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
@@ -18,6 +19,6 @@
     "@anthropic-ai/sdk": "^0.128.0",
     "@smogon/calc": "^0.12.0"
   },
-  "description": "Live battle advisor for Pok\u00e9mon Sword/Shield running in the Eden Switch emulator (Linux)",
+  "description": "Live battle advisor for Pokémon Sword/Shield (Eden) and Black 2/White 2 (melonDS) on Linux",
   "license": "MIT"
 }

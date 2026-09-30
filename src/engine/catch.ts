@@ -1,11 +1,14 @@
-// Gen 8 (Sword/Shield) capture odds per ball, following
-// https://www.dragonflycave.com/mechanics/gen-viii-capturing/
+// Capture odds per ball. Gen 8 follows https://www.dragonflycave.com/mechanics/gen-viii-capturing/;
+// Gen 5 (Black 2) drops the Gen 8 low-level bonus and under-leveled penalty, uses Gen 5 ball values,
+// and needs 3 shake checks instead of 4.
 // Critical captures are ignored (needs Pokédex count), so odds are slightly conservative.
 import { readFileSync } from "node:fs";
 import { Generations } from "@smogon/calc";
 import type { StatusName } from "@smogon/calc/dist/data/interface.js";
+import { GAME } from "../game.ts";
 
-const gen = Generations.get(8);
+const gen = Generations.get(GAME.gen);
+const G5 = GAME.gen === 5;
 const CATCH_RATE = JSON.parse(readFileSync(new URL("../../data/capture.json", import.meta.url), "utf8")) as Record<string, number>;
 
 export const BALLS: Record<number, string> = {
@@ -26,9 +29,9 @@ export function catchOdds(c: CatchInput): { odds: BallOdds[]; levelPenalty: bool
   const sp = gen.species.get(c.speciesName.toLowerCase().replace(/[^a-z0-9]/g, "") as never);
   const baseRate = CATCH_RATE[c.speciesNum] ?? 45;
   const M = c.maxHP, H = Math.max(1, Math.round(M * c.hpPercent / 100));
-  const L = c.level < 21 ? (30 - c.level) / 10 : 1;
+  const L = !G5 && c.level < 21 ? (30 - c.level) / 10 : 1;
   const S = c.status === "slp" || c.status === "frz" ? 2.5 : c.status ? 1.5 : 1;
-  const levelPenalty = c.myLevel < c.level; // assumes fewer than 8 badges
+  const levelPenalty = !G5 && c.myLevel < c.level; // Gen 8 only; assumes fewer than 8 badges
   const D = levelPenalty ? 410 / 4096 : 1;
   const hour = new Date().getHours(); // Eden follows the host clock by default
 
@@ -37,12 +40,12 @@ export function catchOdds(c: CatchInput): { odds: BallOdds[]; levelPenalty: bool
       case 1: return [Infinity];
       case 2: return [2];
       case 3: return [1.5];
-      case 6: return c.types.some((t) => t === "Water" || t === "Bug") ? [3.5] : [1];
+      case 6: return c.types.some((t) => t === "Water" || t === "Bug") ? [G5 ? 3 : 3.5] : [1];
       case 7: return [1, "×3.5 only in water"];
       case 8: return [c.level < 30 ? (41 - c.level) / 10 : 1];
       case 9: return [1, "×3.5 if you've caught this species before"];
-      case 10: return [Math.min(4, 1 + c.turn * 1229 / 4096)];
-      case 13: return hour >= 19 || hour < 5 ? [3] : [1, "×3 at night or in caves"];
+      case 10: return [Math.min(4, 1 + (c.turn - (G5 ? 1 : 0)) * (G5 ? 0.3 : 1229 / 4096))];
+      case 13: return hour >= 19 || hour < 5 ? [G5 ? 3.5 : 3] : [1, `×${G5 ? 3.5 : 3} at night or in caves`];
       case 15: return c.turn <= 1 ? [5] : [1];
       case 492: return [(sp?.baseStats.spe ?? 0) >= 100 ? 4 : 1];
       case 493: return [c.myLevel >= 4 * c.level ? 8 : c.myLevel >= 2 * c.level ? 4 : c.myLevel > c.level ? 2 : 1];
@@ -64,7 +67,7 @@ export function catchOdds(c: CatchInput): { odds: BallOdds[]; levelPenalty: bool
       C = Math.max(1, C + (w >= 300 ? 30 : w >= 200 ? 20 : w >= 100 ? 0 : -20));
     }
     const X = ((3 * M - 2 * H) * C * B) / (3 * M) * L * S * D;
-    const chance = X >= 255 ? 1 : Math.pow(Math.floor(65536 / Math.pow(255 / X, 3 / 16)) / 65536, 4);
+    const chance = X >= 255 ? 1 : Math.pow(Math.floor(65536 / Math.pow(255 / X, 3 / 16)) / 65536, G5 ? 3 : 4);
     return { ball: BALLS[b.id], count: b.count, chance, note };
   });
   odds.sort((a, b) => b.chance - a.chance);

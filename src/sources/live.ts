@@ -58,6 +58,8 @@ export type BattleMon = Mon & { maxHP?: number };
 
 export interface LiveSnapshot {
   inBattle: boolean;
+  /** Set by readers that know it directly (Black 2: the enemy trainer ID); otherwise the server infers it. */
+  trainer?: boolean;
   counter: number;
   party: Mon[];
   wild: Mon | null;
@@ -170,6 +172,15 @@ export class LiveReader {
       if (!best || c.changedAt > best[1]) best = [sh, c.changedAt];
     }
     if (best && best[1] > 0) this.shift = best[0];
+  }
+
+  private foeAlive() {
+    for (let i = 0; i < 6; i++) {
+      const st = this.read(this.at(WILD_STATUS + i * BATTLE_STRIDE), 6), sp = st.readUInt16LE(0);
+      if (!sp || sp > 898) break;
+      if (st.readUInt16LE(4) > 0) return true;
+    }
+    return false;
   }
 
   private counterAt(sh: number) { return this.read((COUNTER + sh) % 0x100000000, 4).readUInt32LE(0); }
@@ -292,7 +303,9 @@ export class LiveReader {
     if (counterLive) this.counterWorks = this.shift;
     const snap: LiveSnapshot = {
       // A large (garbage) counter value only appears outside battles; 0 is ambiguous.
-      inBattle: this.counterWorks === this.shift ? counterLive : counterLive || (counter === 0 && blocksLive),
+      // The counter isn't always at this shift (gym vs Gordie: garbage counter on a live copy), so the fallback
+      // takes live blocks with any counter value, but ends once every foe block is at 0 HP.
+      inBattle: this.counterWorks === this.shift ? counterLive : counterLive || (blocksLive && this.foeAlive()),
       counter, party,
       wild: wd ? parse(wd) : null,
       wildEC: wildRaw.readUInt32LE(0),

@@ -34,6 +34,8 @@ export function decrypt(enc: Buffer): Buffer | null {
 }
 
 export interface Mon {
+  /** Player-given nickname (Gen 5 reader only; unset when not nicknamed). */
+  nickname?: string;
   ec: number; species: number; exp: number; tid: number; ot: string; form: number; heldItem: number; ability: number; nature: number;
   moves: number[]; pp: number[]; hp: number; status: number;
   level?: number; stats?: { hp: number; atk: number; def: number; spa: number; spd: number; spe: number };

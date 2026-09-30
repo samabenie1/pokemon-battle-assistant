@@ -17,6 +17,9 @@ echo "Downloading item names (PKHeX) and TM/TR data (PokeAPI)..."
 curl -fsS https://raw.githubusercontent.com/kwsch/PKHeX/master/PKHeX.Core/Resources/text/items/text_Items_en.txt -o data/items_en.txt
 node scripts/fetch-machines.mjs
 
+echo "Downloading Black 2/White 2 level-up learnsets (PokeAPI)..."
+node scripts/fetch-learnsets.mjs
+
 echo "Compiling native scanners..."
 for f in native/*.c; do cc -O2 -o "${f%.c}" "$f"; done
 

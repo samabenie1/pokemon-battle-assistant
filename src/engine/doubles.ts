@@ -58,17 +58,67 @@ export function analyzeDouble(s: DoubleState, nuzlocke: boolean) {
     ability: s.abilityKnown(f.species) ? foes[j].ability : "???", speed: effSpeed(foes[j]),
   }));
 
-  // Deterministic pick per active: a sure KO (preferring spread moves that don't hurt the partner), else the
-  // biggest single-target hit on the foe it damages most; never a move that could KO the partner.
-  const picks = actives.map((a) => {
-    const options = a.moves.filter((m) => m.category !== "Status" && !m.hitsAlly?.ko).flatMap((m) =>
+  // Bench switch-ins: worst case both foes aim their best move at the slot (the switch-in eats that turn's hits).
+  const benchMons = s.bench.filter((m) => m.hp > 0);
+  const switchIns = benchMons.map((mon) => {
+    const me = toCalc(mon, undefined, false, true);
+    const hits = foes.map((f, j) => {
+      const best = usableMoves(s.foes[j]).map((id) => hit(f, me, moveName(id), field())).sort((a, b) => b.pctMax[1] - a.pctMax[1])[0];
+      return { from: speciesName(s.foes[j].species), move: best?.move ?? null, pctMax: best?.pctMax ?? [0, 0] };
+    });
+    const hpPct = (100 * me.curHP()) / me.maxHP();
+    const focused = hits.reduce((t, h) => t + h.pctMax[1], 0);
+    // Nuzlocke: room for a crit on the bigger hit on top of both max rolls.
+    const worst = focused + (nuzlocke ? 0.5 * Math.max(0, ...hits.map((h) => h.pctMax[1])) : 0);
+    return { name: speciesName(mon.species), hpPct: Math.round(hpPct), status: me.status, hits, focused: Math.round(focused), safe: worst < hpPct };
+  }).sort((a, b) => (a.focused - a.hpPct) - (b.focused - b.hpPct));
+
+  // In danger = a FASTER foe can KO it before it acts (or both foes together can, in a Nuzlocke).
+  const danger = actives.map((a) => {
+    const hpPct = (100 * a.hp) / a.maxHP;
+    const fast = a.threats.filter((t) => t.faster && t.pctMax[1] * (nuzlocke ? 1.5 : 1) >= hpPct);
+    return fast.length > 0 || (nuzlocke && a.koRisk.focused);
+  });
+
+  // Deterministic pick per active: a sure KO, else the biggest single-target hit on the foe it damages most.
+  // Never a move that damages the partner at all (Lava Plume, Earthquake, Surf...); 0% = partner immune, fine.
+  // An active in danger switches to the safest switch-in (each switch-in used once).
+  const usedSwitch = new Set<string>();
+  const picks = actives.map((a, i) => {
+    if (danger[i]) {
+      const sw = switchIns.find((w) => w.safe && !usedSwitch.has(w.name));
+      if (sw) { usedSwitch.add(sw.name); return { pokemon: a.name, move: `switch to ${sw.name}`, target: "–" }; }
+    }
+    const options = a.moves.filter((m) => m.category !== "Status" && !(m.hitsAlly && m.hitsAlly.pctMax[1] > 0)).flatMap((m) =>
       m.spread ? [{ move: m.move, target: "both foes", score: m.vs.reduce((t, v) => t + Math.min(v.pctMax[0], v.hp) + (v.ko ? 100 : 0), 0) - (m.hitsAlly ? m.hitsAlly.pctMax[1] : 0) }]
         : m.vs.map((v) => ({ move: m.move, target: v.target, score: Math.min(v.pctMax[0], v.hp) + (v.ko ? 100 : 0) })));
     const best = options.sort((x, y) => y.score - x.score)[0];
     return { pokemon: a.name, move: best?.move ?? "–", target: best?.target ?? "–" };
   });
 
-  return { double: true as const, actives, foes: foeInfo, picks, bench: s.bench.filter((m) => m.hp > 0).map((m) => speciesName(m.species)) };
+  return { double: true as const, actives, foes: foeInfo, picks, danger, switchIns, bench: benchMons.map((m) => speciesName(m.species)) };
+}
+
+/** Overrule AI advice that breaks the hard rules: hurting the partner, or leaving an endangered Pokémon in when a safe switch exists. */
+export function checkDoubleAdvice(d: DoubleAnalysis, actions: { pokemon: string; choice: string; target: string }[]) {
+  const notes: string[] = [];
+  const fixed = actions.map((act) => {
+    const i = d.actives.findIndex((a) => a.name === act.pokemon);
+    if (i < 0) return act;
+    const pick = d.picks[i];
+    const asPick = { pokemon: pick.pokemon, choice: pick.move, target: pick.target };
+    const mv = d.actives[i].moves.find((m) => m.move.toLowerCase() === act.choice.toLowerCase());
+    if (mv?.hitsAlly && mv.hitsAlly.pctMax[1] > 0) {
+      notes.push(`${act.pokemon}: ${mv.move} would hit your partner (${mv.hitsAlly.pctMax[1]}%), so it's replaced`);
+      return asPick;
+    }
+    if (d.danger[i] && !/^switch/i.test(act.choice) && pick.move.startsWith("switch")) {
+      notes.push(`${act.pokemon} can be KO'd by a faster foe this turn, so it switches out`);
+      return asPick;
+    }
+    return act;
+  });
+  return { actions: fixed, notes };
 }
 
 export type DoubleAnalysis = ReturnType<typeof analyzeDouble>;
