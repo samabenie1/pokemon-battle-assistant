@@ -128,8 +128,9 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
 }
 
 // ---- live polling ----
+const b2Reader = GAME.id === "b2" ? new B2Reader() : null;
 const reader: Pick<LiveReader, "poll" | "balls" | "medicine" | "generalItems" | "battleItems" | "machines" | "ownedSpecies"> =
-  GAME.id === "b2" ? new B2Reader() : new LiveReader();
+  b2Reader ?? new LiveReader();
 let battleEC = 0;           // EC of the wild Pokémon in the current battle
 let enemyPct = 100;         // estimated enemy HP %, lowered when the player reports a move
 let lastKey = "", stableSince = 0, lastCounter = -1;
@@ -179,7 +180,7 @@ function poll() {
     const team = s.party.map((m) => ({ name: monLabel(m), hp: m.hp, maxHP: toCalc(m).maxHP() }));
     // Bag tips (held items, candies, TMs) between battles; recomputed at most every 30 s.
     if (Date.now() - tipsAt > 30_000) {
-      try { tips = bagTips(s.party, reader.generalItems(), reader.machines(), TARGET || 100); } catch (e) { console.log("[bag]", (e as Error).message); }
+      try { tips = bagTips(s.party, reader.generalItems(), reader.machines(), TARGET || 100, b2Reader?.machineData()); } catch (e) { console.log("[bag]", (e as Error).message); }
       tipsAt = Date.now();
     }
     return setStatus("waiting", { topUp: topUp(team, reader.medicine()), bagTips: tips });

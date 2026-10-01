@@ -4,8 +4,10 @@ import { Generations, Move } from "@smogon/calc";
 import { expForLevel, type Mon } from "../pk8.ts";
 import { moveName, speciesName } from "../names.ts";
 import { toCalc } from "./calc.ts";
+import { GAME } from "../game.ts";
+import { canLearn, machineLabel, machineSlot } from "../offsets/b2rom.ts";
 
-const gen = Generations.get(8);
+const gen = Generations.get(GAME.gen);
 const data = (f: string) => new URL(`../../data/${f}`, import.meta.url);
 const ITEM_NAMES = readFileSync(data("items_en.txt"), "utf8").split("\n").map((s) => s.trim());
 const MACHINES = JSON.parse(readFileSync(data("machines.json"), "utf8")) as { byItem: Record<string, string>; canLearn: Record<string, string[]> };
@@ -47,7 +49,10 @@ function power(mon: Mon, move: string) {
   return mv.bp * hits * stab * (stat / Math.max(p.stats.atk, p.stats.spa));
 }
 
-export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], target: number) {
+/** Black 2: TM/HM moves read from RAM and compatibility from the ROM (both randomized). */
+export interface B2Machines { moves: number[]; compat: Buffer[] | null }
+
+export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], target: number, b2?: B2Machines | null) {
   const tips: string[] = [];
   const names = new Set(general.filter((i) => i.count > 0).map((i) => itemLabel(i.id)));
 
@@ -92,17 +97,32 @@ export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], targe
   let checked = new Set<string>();
   try { checked = new Set(JSON.parse(readFileSync(data("tms-checked.json"), "utf8"))); } catch { /* none yet */ }
   for (const tm of machines.filter((i) => i.count > 0)) {
-    const label = itemLabel(tm.id), slug = MACHINES.byItem[machineKey(label)];
-    const move = slug && moveFromSlug(slug);
-    if (!move || checked.has(label)) continue;
+    let label = itemLabel(tm.id), move: string | null = null, slot = -1;
+    if (b2) {
+      slot = machineSlot(tm.id);
+      if (slot < 0) continue;
+      label = machineLabel(slot); move = moveName(b2.moves[slot]);
+    } else {
+      const slug = MACHINES.byItem[machineKey(label)];
+      move = slug ? moveFromSlug(slug) : null;
+      if (checked.has(label)) continue;
+    }
+    if (!move) continue;
     const mv = new Move(gen, move);
     if (mv.category === "Status") continue;
     for (const m of party) {
       const current = m.moves.filter(Boolean).map(moveName);
       if (current.includes(move) || (blocked[label] ?? []).includes(speciesName(m.species))) continue;
+      if (b2?.compat && !canLearn(b2.compat, m.species, slot)) continue;
+      if (current.length < 4) { // a free move slot: anything decent is pure gain
+        if (power(m, move) > 0) cands.push({ tm: label, move, mon: speciesName(m.species), gain: 10 + power(m, move) / 100, replaces: "", why: "fills its empty move slot" });
+        continue;
+      }
       // Variable-power moves (Endeavor, Seismic Toss…) have no fixed BP: don't treat them as "weak".
       const scored = current.map((c) => ({ c, p: power(m, c), variable: new Move(gen, c).category !== "Status" && !new Move(gen, c).bp }));
-      const weakest = scored.filter((x) => !x.variable).sort((a, b) => a.p - b.p)[0];
+      // Replace the weakest ATTACK: status moves (Hypnosis, Leer…) score 0 power but aren't dead weight.
+      const attacks = scored.filter((x) => !x.variable && x.p > 0);
+      const weakest = (attacks.length ? attacks : scored.filter((x) => !x.variable)).sort((a, b) => a.p - b.p)[0];
       const types = new Set(current.map((c) => new Move(gen, c)).filter((x) => x.category !== "Status").map((x) => x.type));
       const newType = !types.has(mv.type) && mv.type !== "Normal"; // Normal is super effective on nothing
       const gain = power(m, move) / Math.max(1, weakest?.p ?? 0);
@@ -115,7 +135,9 @@ export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], targe
   for (const c of cands.sort((a, b) => b.gain - a.gain)) {
     if (usedTM.has(c.tm) || usedMon.has(c.mon)) continue;
     usedTM.add(c.tm); usedMon.add(c.mon);
-    tips.push(`${c.tm} (${c.move}) → ${c.mon} if it can learn it (check "Able" in the TM menu), replacing ${c.replaces}: ${c.why}.`);
+    const exact = !!b2?.compat;
+    const hm = c.tm.startsWith("HM") ? " HM moves can only be removed by the Move Deleter (Mistralton City)." : "";
+    tips.push(`${c.tm} (${c.move}) → ${c.mon}${exact ? "" : " if it can learn it (check \"Able\" in the TM menu)"}${c.replaces ? `, replacing ${c.replaces}` : ""}: ${c.why}.${hm}`);
   }
   // Mints do nothing when held; they're used from the bag.
   for (const h of heldNow) if (/ Mint$/.test(h.item)) tips.push(`${speciesName(h.m.species)} is holding a ${h.item}, which does nothing when held (use mints from the bag).`);

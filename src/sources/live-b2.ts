@@ -11,6 +11,9 @@
 // - Bag (PKHeX SAV5 pouch layout): items pouch at +0x18D20 (310 × u16 id, u16 count), medicine at +0x194F8 (48).
 import { MelonDS } from "../reader/melonds.ts";
 import { B2 } from "../offsets/b2.ts";
+import { readCompat } from "../offsets/b2rom.ts";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { decrypt, parse, SIZE_PARTY } from "../pk5.ts";
 import type { Boosts, Mon } from "../pk8.ts";
 import type { BattleMon, LiveSnapshot } from "./live.ts";
@@ -18,6 +21,10 @@ import type { BattleMon, LiveSnapshot } from "./live.ts";
 const BATTLERS_PER_SIDE = 7;
 const ITEMS_POUCH = 0x18d20, ITEMS_SLOTS = 310;
 const MEDICINE_POUCH = 0x194f8, MEDICINE_SLOTS = 48;
+const TM_POUCH = 0x19344, TM_SLOTS = 109; // verified 10-01 (TMs + HMs, item ids 328-425 / 618-620)
+// The TM/HM move table in the (decompressed) arm9: this prefix, then 101 × u16 move ids (TM01-92, HM01-06, TM93-95).
+// UPR's Gen5RomHandler uses the same marker. Randomized in this ROM, so it's read live.
+const TM_TABLE_PREFIX = Buffer.from("87038803", "hex");
 const BALL_IDS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 492, 493, 494, 495, 496, 497, 498, 499, 576]);
 
 export class B2Reader {
@@ -164,9 +171,30 @@ export class B2Reader {
   balls() { return this.pouch(ITEMS_POUCH, ITEMS_SLOTS).filter((i) => BALL_IDS.has(i.id)); }
   medicine() { return this.pouch(MEDICINE_POUCH, MEDICINE_SLOTS); }
   battleItems() { return this.pouch(ITEMS_POUCH, ITEMS_SLOTS); } // Poké Doll (63) lives in the items pouch
-  // Bag tips are built on Sword/Shield data (TMs, Exp. Candies), so they're off for Black 2.
-  generalItems() { return []; }
-  machines() { return []; }
+  generalItems() { return this.pouch(ITEMS_POUCH, ITEMS_SLOTS); }
+  machines() { return this.pouch(TM_POUCH, TM_SLOTS); }
+
+  private tmCache?: { pid: number; moves: number[]; compat: Buffer[] | null };
+  /** TM/HM moves (from RAM) and per-species compatibility (from the ROM file melonDS was started with). */
+  machineData() {
+    if (!this.connected()) return null;
+    if (this.tmCache?.pid === this.ds.pid) return this.tmCache;
+    const ram = this.ds.bytes(0, 0x200000);
+    const at = ram.indexOf(TM_TABLE_PREFIX);
+    if (at < 0) return null;
+    const moves = Array.from({ length: 101 }, (_, i) => ram.readUInt16LE(at + 4 + i * 2));
+    let compat: Buffer[] | null = null;
+    // The ROM path: PBA_ROM, else melonDS's command line, else the newest entry in its Recent ROMs list.
+    const recent = () => { try {
+      return /RecentROM = \["([^"]+)"/.exec(readFileSync(`${homedir()}/.var/app/net.kuribo64.melonDS/config/melonDS/melonDS.toml`, "utf8"))?.[1];
+    } catch { return undefined; } };
+    const rom = process.env.PBA_ROM
+      ?? readFileSync(`/proc/${this.ds.pid}/cmdline`, "utf8").split("\0").find((a) => /\.nds$/i.test(a)) ?? recent();
+    try { if (rom && readFileSync(rom).toString("latin1", 0x0c, 0x10) === this.ds.gameCode) compat = readCompat(rom); } catch (e) { console.log("[tm]", (e as Error).message); }
+    console.log(`[tm] TM table at 0x${at.toString(16)}, compatibility ${compat ? `from ${rom}` : "UNKNOWN"}`);
+    this.tmCache = { pid: this.ds.pid, moves, compat };
+    return this.tmCache;
+  }
   /** Species whose (randomized) ability the player knows: the current party. PC boxes aren't read yet. */
   ownedSpecies() {
     return new Set(this.connected() ? this.party().map((m) => m.species) : []);
