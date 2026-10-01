@@ -21,13 +21,17 @@ export const BALLS: Record<number, string> = {
 export interface CatchInput {
   speciesNum: number; speciesName: string; level: number; types: string[]; status: StatusName | "";
   maxHP: number; hpPercent: number; myLevel: number; turn: number; balls: { id: number; count: number }[];
+  /** Catch rate from the ROM (randomizers change it); defaults to the vanilla table. */
+  baseRate?: number;
+  /** Gen 5 dark grass: ×0.3 with ≤30 species caught, up to ×1 at 600+. */
+  grassMod?: number;
 }
 
 export interface BallOdds { ball: string; count: number; chance: number; note?: string; }
 
 export function catchOdds(c: CatchInput): { odds: BallOdds[]; levelPenalty: boolean } {
   const sp = gen.species.get(c.speciesName.toLowerCase().replace(/[^a-z0-9]/g, "") as never);
-  const baseRate = CATCH_RATE[c.speciesNum] ?? 45;
+  const baseRate = c.baseRate ?? CATCH_RATE[c.speciesNum] ?? 45;
   const M = c.maxHP, H = Math.max(1, Math.round(M * c.hpPercent / 100));
   const L = !G5 && c.level < 21 ? (30 - c.level) / 10 : 1;
   const S = c.status === "slp" || c.status === "frz" ? 2.5 : c.status ? 1.5 : 1;
@@ -66,7 +70,7 @@ export function catchOdds(c: CatchInput): { odds: BallOdds[]; levelPenalty: bool
       const w = sp?.weightkg ?? 0;
       C = Math.max(1, C + (w >= 300 ? 30 : w >= 200 ? 20 : w >= 100 ? 0 : -20));
     }
-    const X = ((3 * M - 2 * H) * C * B) / (3 * M) * L * S * D;
+    const X = ((3 * M - 2 * H) * C * B) / (3 * M) * L * S * D * (c.grassMod ?? 1);
     const chance = X >= 255 ? 1 : Math.pow(Math.floor(65536 / Math.pow(255 / X, 3 / 16)) / 65536, G5 ? 3 : 4);
     return { ball: BALLS[b.id], count: b.count, chance, note };
   });

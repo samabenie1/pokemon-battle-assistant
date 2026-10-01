@@ -7,8 +7,9 @@ import { readFileSync } from "node:fs";
 const PERSONAL_FILE = 363;
 const TM_BITS = 0x28;
 
-/** species → bitfield of machine slots (0..100). */
-export function readCompat(romPath: string): Buffer[] {
+/** Per species: TM/HM bitfield (slots 0..100) and catch rate (+0x08, raised by the randomizer's minimum-catch-rate
+ *  setting: Dialga 30 → 64 in this ROM). */
+export function readPersonal(romPath: string): { compat: Buffer[]; catchRate: number[] } {
   const r = readFileSync(romPath);
   const fat = r.readUInt32LE(0x48);
   const start = r.readUInt32LE(fat + PERSONAL_FILE * 8), end = r.readUInt32LE(fat + PERSONAL_FILE * 8 + 4);
@@ -21,7 +22,10 @@ export function readCompat(romPath: string): Buffer[] {
   p += n.readUInt32LE(p + 4);
   p += n.readUInt32LE(p + 4); // BTNF
   const gmif = p + 8;
-  return entries.map(([a]) => n.subarray(gmif + a + TM_BITS, gmif + a + TM_BITS + 13));
+  return {
+    compat: entries.map(([a]) => n.subarray(gmif + a + TM_BITS, gmif + a + TM_BITS + 13)),
+    catchRate: entries.map(([a]) => n[gmif + a + 0x08]),
+  };
 }
 
 export const canLearn = (compat: Buffer[], species: number, slot: number) =>

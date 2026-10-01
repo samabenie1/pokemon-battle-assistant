@@ -98,7 +98,13 @@ function renderDoubles(d) {
       m.vs.map((v) => `<td>${m.category === "Status" ? "<span class='meta'>status</span>" : `${v.pctMax[0]}–${v.pctMax[1]}%${v.ko ? " <b style='color:var(--good)'>KO</b>" : ""}`}</td>`).join("") + `<td>${m.pp ?? ""}</td></tr>`).join("") +
     `</table><div class="meta" style="margin-top:6px">Threats: ${x.threats.map((t) => `${esc(t.from)}'s ${esc(t.move ?? "–")} ${t.pctMax[1]}%${t.faster ? " (faster)" : ""}`).join(" · ")}</div></div>`).join("");
   const foes = `<div class="panel" style="margin-top:12px"><h3>Opponents</h3>${D.foes.map((f) => `<div style="margin-bottom:8px"><b>${esc(f.name)}</b> Lv ${f.level} ${f.types.map(badge).join("")} <span class="meta">ability ${esc(f.ability)} · speed ${f.speed}</span>${hpBar(f.hp, f.maxHP)}</div>`).join("")}</div>`;
-  document.getElementById("rec").insertAdjacentHTML("beforeend", grid + foes);
+  const pctC = (x) => x >= 0.995 ? "100%" : `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
+  const catchBox = d.catch && d.catch.odds.length ? `<div class="panel" style="margin-top:12px"><h3>Catching ${esc(D.foes[0].name)}? (per throw)</h3>
+    <div style="font-size:24px;font-weight:800">${esc(d.catch.odds[0].ball)} · ${pctC(d.catch.odds[0].chance)}</div>
+    <div class="meta" style="margin-top:6px">${d.catch.odds.map((o) => `${esc(o.ball)} ×${o.count}: <b style="color:var(--text)">${pctC(o.chance)}</b>`).join(" · ")}</div>` +
+    ((d.catchKO ?? []).length ? `<div style="color:var(--bad);font-weight:700;margin-top:6px">⚠ Can KO it: ${d.catchKO.map(esc).join(", ")}</div>` : "") +
+    `<div class="meta">Assumes dark grass with ≤30 species caught (×0.3); sleep ×2.5, paralysis ×1.5.</div></div>` : "";
+  document.getElementById("rec").insertAdjacentHTML("beforeend", grid + catchBox + foes);
 }
 
 // Level-up move offers: a box only when the game is asking right now; upcoming ones as one small line.

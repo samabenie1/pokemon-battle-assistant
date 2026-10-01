@@ -144,6 +144,10 @@ NEVER use a move whose hitsAlly damage is above 0% (Lava Plume, Earthquake, Surf
 danger[i] = true means actives[i] can be KO'd by a FASTER foe before it moves (or by both foes together): switch it out
 to a switchIns[] entry with safe = true (switchIns[].focused = % it takes if both foes hit it). Only attack instead if
 that attack KOs every foe that threatens it before they move. Paralysis halves speed and costs 25% of turns.
+catchMode (when present): one wild foe is left and the player may want to CATCH it (a Nuzlocke encounter). Unless it
+threatens a KO, never pick a move in catchMode.movesThatCouldKO. Prefer sleep/paralysis moves or harmless status moves,
+and have one Pokémon throw catchMode.bestBall (choice "Throw <ball>", target the foe). In a partner battle only the
+player's own Pokémon (the first one) can be controlled.
 The reason must be one short sentence citing numbers.`;
 
 const DOUBLE_SCHEMA = {

@@ -32,7 +32,7 @@ const DEMO = process.env.PBA_SOURCE === "demo";
 const page = new URL("../public/index.html", import.meta.url);
 
 type Status = "no-emulator" | "waiting" | "trainer" | "battle";
-let latest: { status: Status; analysis?: Analysis; advice?: Advice; error?: string; estimated?: boolean; catch?: ReturnType<typeof catchOdds>; training?: Training; nuzlocke?: boolean;
+let latest: { status: Status; analysis?: Analysis; advice?: Advice; error?: string; estimated?: boolean; catch?: ReturnType<typeof catchOdds>; catchKO?: string[]; training?: Training; nuzlocke?: boolean;
   heal?: ReturnType<typeof battleHeal>; bagTips?: string[];
   levelUp?: ReturnType<typeof dropCandidate> & { level: number; at: number }; newMoves?: NewMove[];
   doubles?: DoubleAnalysis; doubleAdvice?: DoubleAdvice; cure?: { item: string; count: number; target: string; status: string } | null; topUp?: ReturnType<typeof topUp>; nextOptions?: { foe: string; action: string; choice: string; reason: string }[]; at: number } = { status: "waiting", at: Date.now() };
@@ -69,6 +69,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   const odds = balls.length && !state.trainer ? catchOdds({
     speciesNum: state.enemy.active.species, speciesName: e.name, level: e.level, types: e.types, status: e.status,
     maxHP: e.maxHP, hpPercent: e.hpPercent, myLevel: analysis.me.level, turn: battleTurn, balls,
+    baseRate: romCatchRate(state.enemy.active.species),
   }) : undefined;
   console.log(`[turn] ${analysis.me.name} ${analysis.me.hp}/${analysis.me.maxHP} vs ${analysis.enemy.name} Lv${analysis.enemy.level} ~${analysis.enemy.hpPercent}%`);
   const train = capOn && team ? training({
@@ -131,6 +132,11 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
 const b2Reader = GAME.id === "b2" ? new B2Reader() : null;
 const reader: Pick<LiveReader, "poll" | "balls" | "medicine" | "generalItems" | "battleItems" | "machines" | "ownedSpecies"> =
   b2Reader ?? new LiveReader();
+let battlerDumpKey = "";
+/** PKM status bits → calc status (sleep 0-2, poison 3, burn 4, freeze 5, paralysis 6, toxic 7). */
+const statusName = (st = 0) => (st & 7 ? "slp" : st & 0x20 ? "frz" : st & 0x40 ? "par" : st & 0x10 ? "brn" : st & 0x80 ? "tox" : st & 0x08 ? "psn" : "") as "slp" | "frz" | "par" | "brn" | "tox" | "psn" | "";
+/** Black 2: the ROM's (randomized) catch rate for a species. */
+const romCatchRate = (species: number) => { try { return b2Reader?.machineData()?.catchRate?.[species]; } catch { return undefined; } };
 let battleEC = 0;           // EC of the wild Pokémon in the current battle
 let enemyPct = 100;         // estimated enemy HP %, lowered when the player reports a move
 let lastKey = "", stableSince = 0, lastCounter = -1;
@@ -197,13 +203,29 @@ function poll() {
     if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; }
     if (key === lastKey || now - stableSince < 800) return;
     lastKey = key;
+    // Partner (multi) battles aren't mapped yet: an AI ally's Pokémon gets misread as my 2nd party member.
+    // Log every battler slot once per battle so the ally's location can be found.
+    const dumpKey = s.enemyTeam.map((m) => m.ec).join(",");
+    if (b2Reader && dumpKey !== battlerDumpKey) { battlerDumpKey = dumpKey; console.log(`[battlers] ${b2Reader.debugBattlers().join(" | ")}`); }
     const d = analyzeDouble({ mine, foes, bench: s.battleParty.filter((m) => !s.myActives.includes(m.ec)), abilityKnown }, NUZLOCKE);
     const seq = ++adviceSeq;
-    latest = { status: "battle", doubles: d, nuzlocke: NUZLOCKE, at: now };
+    // A lone wild foe (the other one fainted or was caught): show catch odds, and which of my moves could KO it.
+    // Wild double battles in B2 only happen in dark grass: ×0.3 catch rate with ≤30 species caught (assumed).
+    let catchMode: { foe: string; hpPercent: number; odds: ReturnType<typeof catchOdds>; koMoves: string[] } | undefined;
+    if (!s.trainer && foes.length === 1) {
+      const f = d.foes[0], balls = reader.balls();
+      const hpPercent = Math.round(100 * f.hp / f.maxHP);
+      const koMoves = d.actives.flatMap((x) => x.moves.filter((m) => m.category !== "Status" && (m.vs[0]?.pctMax[1] ?? 0) >= hpPercent)
+        .map((m) => `${x.name}'s ${m.move}`));
+      if (balls.length) catchMode = { foe: f.name, hpPercent, koMoves, odds: catchOdds({
+        speciesNum: foes[0].species, speciesName: f.name, level: f.level ?? 1, types: f.types, status: statusName(foes[0].status),
+        maxHP: f.maxHP, hpPercent, myLevel: d.actives[0].level ?? 1, turn: 2, balls, baseRate: romCatchRate(foes[0].species), grassMod: 0.3 }) };
+    }
+    latest = { status: "battle", doubles: d, nuzlocke: NUZLOCKE, catch: catchMode?.odds, catchKO: catchMode?.koMoves, at: now };
     push();
     console.log(`[doubles] ${d.actives.map((a) => `${a.name} ${a.hp}/${a.maxHP}`).join(" + ")} vs ${d.foes.map((f) => `${f.name} ${f.hp}/${f.maxHP}`).join(" + ")}`);
     const foeOT = s.enemyTeam[0]?.ot ?? "";
-    adviseDouble(d, DYNAMAX_TRAINERS.has(foeOT) && BOSS_MODEL ? BOSS_MODEL : undefined).then((adv) => {
+    adviseDouble(catchMode ? { ...d, catchMode: { foe: catchMode.foe, bestBall: catchMode.odds.odds[0], movesThatCouldKO: catchMode.koMoves } } : d, DYNAMAX_TRAINERS.has(foeOT) && BOSS_MODEL ? BOSS_MODEL : undefined).then((adv) => {
       if (seq !== adviceSeq) return;
       const chk = checkDoubleAdvice(d, adv.actions);
       if (chk.notes.length) { adv.actions = chk.actions; adv.reason = `${adv.reason} [Overruled: ${chk.notes.join("; ")}.]`; console.log(`[advice2] overruled: ${chk.notes.join("; ")}`); }

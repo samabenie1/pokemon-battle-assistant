@@ -10,8 +10,9 @@
 // - The enemy's own PK5 party copy (+0x53B70) keeps its battle-start HP, so live HP always comes from battlers.
 // - Bag (PKHeX SAV5 pouch layout): items pouch at +0x18D20 (310 × u16 id, u16 count), medicine at +0x194F8 (48).
 import { MelonDS } from "../reader/melonds.ts";
+import { speciesName } from "../names.ts";
 import { B2 } from "../offsets/b2.ts";
-import { readCompat } from "../offsets/b2rom.ts";
+import { readPersonal } from "../offsets/b2rom.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { decrypt, parse, SIZE_PARTY } from "../pk5.ts";
@@ -88,6 +89,18 @@ export class B2Reader {
       if (!b) break;
       const m = this.battler(b);
       if (m && !seen.has(m.ec)) { seen.add(m.ec); out.push(m); }
+    }
+    return out;
+  }
+
+  /** Diagnostic: every pointer slot after mainBattleDataPtr (4 clients × 7), with species/HP/OT. Used to find
+   *  where an AI ally's Pokémon live in partner (multi) battles, which aren't mapped yet. */
+  debugBattlers(): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < 28; i++) {
+      const b = this.ds.ptr(this.base + B2.mainBattleDataPtr + i * 4);
+      const m = b ? this.battler(b) : null;
+      if (m) out.push(`[${i}] +0x${(i * 4).toString(16)} ${speciesName(m.species)} ${m.hp}/${m.maxHP} OT=${m.ot} TID=${m.tid}`);
     }
     return out;
   }
@@ -174,8 +187,8 @@ export class B2Reader {
   generalItems() { return this.pouch(ITEMS_POUCH, ITEMS_SLOTS); }
   machines() { return this.pouch(TM_POUCH, TM_SLOTS); }
 
-  private tmCache?: { pid: number; moves: number[]; compat: Buffer[] | null };
-  /** TM/HM moves (from RAM) and per-species compatibility (from the ROM file melonDS was started with). */
+  private tmCache?: { pid: number; moves: number[]; compat: Buffer[] | null; catchRate: number[] | null };
+  /** TM/HM moves (from RAM), per-species TM compatibility and catch rates (from the ROM file melonDS is running). */
   machineData() {
     if (!this.connected()) return null;
     if (this.tmCache?.pid === this.ds.pid) return this.tmCache;
@@ -183,16 +196,16 @@ export class B2Reader {
     const at = ram.indexOf(TM_TABLE_PREFIX);
     if (at < 0) return null;
     const moves = Array.from({ length: 101 }, (_, i) => ram.readUInt16LE(at + 4 + i * 2));
-    let compat: Buffer[] | null = null;
+    let compat: Buffer[] | null = null, catchRate: number[] | null = null;
     // The ROM path: PBA_ROM, else melonDS's command line, else the newest entry in its Recent ROMs list.
     const recent = () => { try {
       return /RecentROM = \["([^"]+)"/.exec(readFileSync(`${homedir()}/.var/app/net.kuribo64.melonDS/config/melonDS/melonDS.toml`, "utf8"))?.[1];
     } catch { return undefined; } };
     const rom = process.env.PBA_ROM
       ?? readFileSync(`/proc/${this.ds.pid}/cmdline`, "utf8").split("\0").find((a) => /\.nds$/i.test(a)) ?? recent();
-    try { if (rom && readFileSync(rom).toString("latin1", 0x0c, 0x10) === this.ds.gameCode) compat = readCompat(rom); } catch (e) { console.log("[tm]", (e as Error).message); }
+    try { if (rom && readFileSync(rom).toString("latin1", 0x0c, 0x10) === this.ds.gameCode) ({ compat, catchRate } = readPersonal(rom)); } catch (e) { console.log("[tm]", (e as Error).message); }
     console.log(`[tm] TM table at 0x${at.toString(16)}, compatibility ${compat ? `from ${rom}` : "UNKNOWN"}`);
-    this.tmCache = { pid: this.ds.pid, moves, compat };
+    this.tmCache = { pid: this.ds.pid, moves, compat, catchRate };
     return this.tmCache;
   }
   /** Species whose (randomized) ability the player knows: the current party. PC boxes aren't read yet. */
