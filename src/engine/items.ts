@@ -22,7 +22,15 @@ const BOOSTERS: Record<string, string> = {
   "Never-Melt Ice": "Ice", "Black Belt": "Fighting", "Poison Barb": "Poison", "Soft Sand": "Ground", "Sharp Beak": "Flying",
   "Twisted Spoon": "Psychic", "Silver Powder": "Bug", "Hard Stone": "Rock", "Spell Tag": "Ghost", "Dragon Fang": "Dragon",
   "Black Glasses": "Dark", "Metal Coat": "Steel", "Fairy Feather": "Fairy",
+  // Plates and incenses: the same +20% (Gen 4+).
+  "Flame Plate": "Fire", "Splash Plate": "Water", "Zap Plate": "Electric", "Meadow Plate": "Grass", "Icicle Plate": "Ice",
+  "Fist Plate": "Fighting", "Toxic Plate": "Poison", "Earth Plate": "Ground", "Sky Plate": "Flying", "Mind Plate": "Psychic",
+  "Insect Plate": "Bug", "Stone Plate": "Rock", "Spooky Plate": "Ghost", "Draco Plate": "Dragon", "Dread Plate": "Dark",
+  "Iron Plate": "Steel", "Pixie Plate": "Fairy",
+  "Rose Incense": "Grass", "Sea Incense": "Water", "Wave Incense": "Water", "Odd Incense": "Psychic", "Rock Incense": "Rock",
 };
+// Held items that are already a good choice (never suggest swapping them out for a booster).
+const KEEP = new Set(["Eviolite", "Exp. Share", "Lucky Egg", "Amulet Coin", "Choice Band", "Choice Specs", "Choice Scarf", "Focus Sash", "Black Sludge"]);
 // General-purpose held items worth equipping, best first.
 const GOOD_HELD = ["Leftovers", "Life Orb", "Expert Belt", "Shell Bell", "Sitrus Berry", "Muscle Band", "Wise Glasses", "Scope Lens", "Quick Claw", "Oran Berry"];
 const CANDY_EXP: Record<string, number> = { "Exp. Candy XS": 100, "Exp. Candy S": 800, "Exp. Candy M": 3000, "Exp. Candy L": 10000, "Exp. Candy XL": 30000 };
@@ -58,8 +66,31 @@ export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], targe
 
   // 1) Held items: boosters / good items in the bag → the Pokémon that benefits most and holds nothing useful.
   const heldNow = party.map((m) => ({ m, item: m.heldItem ? itemLabel(m.heldItem) : "" }));
-  const weakHolder = (item: string) => !item || !(item in BOOSTERS) && !GOOD_HELD.includes(item);
+  const weakHolder = (item: string) => !item || !(item in BOOSTERS) && !GOOD_HELD.includes(item) && !KEEP.has(item);
   const given = new Set<Mon>();
+  const holds = (name: string) => heldNow.some((h) => h.item === name);
+  const label = (m: Mon) => speciesName(m.species);
+  const give = (h: { m: Mon; item: string }, item: string, why: string) => {
+    given.add(h.m);
+    tips.push(`Give ${item} to ${label(h.m)}: ${why}${h.item ? ` (replacing ${h.item})` : ""}.`);
+  };
+  // Eviolite: ×1.5 Def and SpD on a Pokémon that can still evolve. Best on the highest-level one (it fights most).
+  if (names.has("Eviolite") && !holds("Eviolite")) {
+    const h = heldNow.filter((x) => weakHolder(x.item) && (gen.species.get(label(x.m).toLowerCase().replace(/[^a-z0-9]/g, "") as never) as { nfe?: boolean } | undefined)?.nfe)
+      .sort((a, b) => (b.m.level ?? 1) - (a.m.level ?? 1))[0];
+    if (h) give(h, "Eviolite", "it can still evolve, so it takes 1.5× Defense and Sp. Def (big Nuzlocke safety boost)");
+  }
+  // Gen 5 Exp. Share / Lucky Egg: on the lowest-level Pokémon under the cap.
+  for (const item of ["Exp. Share", "Lucky Egg"]) {
+    if (!names.has(item) || holds(item)) continue;
+    const h = heldNow.filter((x) => weakHolder(x.item) && !given.has(x.m) && (x.m.level ?? 1) < target).sort((a, b) => (a.m.level ?? 1) - (b.m.level ?? 1))[0];
+    if (h) give(h, item, item === "Exp. Share"
+      ? `lowest level (Lv ${h.m.level}); it gets a share of EXP from every battle without fighting${GAME.expShareAll ? "" : " (take it off at the cap)"}`
+      : `lowest level (Lv ${h.m.level}); ×1.5 EXP`);
+  }
+  // At or over the cap and holding an EXP item: take it off.
+  for (const h of heldNow) if ((h.item === "Exp. Share" || h.item === "Lucky Egg") && (h.m.level ?? 1) >= target)
+    tips.push(`Take the ${h.item} off ${label(h.m)}: it's at the Lv ${target} cap.`);
   for (const item of [...GOOD_HELD.filter((i) => names.has(i)), ...Object.keys(BOOSTERS).filter((i) => names.has(i))]) {
     const type = BOOSTERS[item];
     const scored = heldNow.filter((h) => weakHolder(h.item) && !given.has(h.m)).map((h) => {
@@ -73,6 +104,10 @@ export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], targe
       tips.push(`Give ${item} to ${speciesName(pick.h.m.species)}${type ? ` (boosts its ${type} attacks by 20%)` : ""}${pick.h.item ? `, replacing ${pick.h.item}` : ""}.`);
     }
   }
+
+  // Amulet Coin (double prize money) on the lead, if nothing better is going there.
+  if (names.has("Amulet Coin") && !holds("Amulet Coin") && heldNow[0] && !heldNow[0].item && !given.has(heldNow[0].m))
+    give(heldNow[0], "Amulet Coin", "your lead; doubles prize money from trainers");
 
   // 2) Candies → lowest-level Pokémon, never past the cap.
   const low = [...party].filter((m) => (m.level ?? 1) < target).sort((a, b) => (a.level ?? 1) - (b.level ?? 1));
