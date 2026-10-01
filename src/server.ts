@@ -9,6 +9,7 @@ import { demoState } from "./sources/demo.ts";
 import { LiveReader } from "./sources/live.ts";
 import { B2Reader } from "./sources/live-b2.ts";
 import { GAME } from "./game.ts";
+import { B2_BOSSES } from "./offsets/b2.ts";
 import { monLabel, moveName, speciesName } from "./names.ts";
 import { catchOdds } from "./engine/catch.ts";
 import { training, type Training } from "./engine/training.ts";
@@ -23,6 +24,7 @@ const TARGET = Number(process.env.PBA_TARGET_LEVEL) || 0;
 // Stronger (pricier) model for gym leader / Champion battles only; unset = same model everywhere.
 const BOSS_MODEL = process.env.PBA_BOSS_MODEL;
 let bossBattle = false;
+let bossName: string | undefined; // Black 2 gym leader / Elite Four: the level cap is off for this fight
 const NUZLOCKE = process.env.PBA_NUZLOCKE === "1";
 
 const PORT = Number(process.env.PBA_PORT ?? 7878);
@@ -59,7 +61,8 @@ let tips: string[] = [], tipsAt = 0;
 const pokeDolls = () => { try { return reader.battleItems().find((i) => i.id === 63)?.count ?? 0; } catch { return 0; } };
 let dynamaxAllowed = false; // this battle permits Dynamax (gym/stadium, or someone is Dynamaxed)
 async function update(state: BattleState, estimated: boolean, balls: { id: number; count: number }[] = [], team?: TeamCtx, meds: { id: number; count: number }[] = [], nextFoes: Mon[] = []) {
-  const analysis = analyze(state, { preferLowLevel: TARGET > 0, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: between,
+  const capOn = TARGET > 0 && !bossName;
+  const analysis = analyze(state, { preferLowLevel: capOn, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: between,
     myDamageScale: damageScale.get(state.enemy.active.ec) ?? 1 });
   const seq = ++adviceSeq;
   const e = analysis.enemy;
@@ -68,7 +71,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
     maxHP: e.maxHP, hpPercent: e.hpPercent, myLevel: analysis.me.level, turn: battleTurn, balls,
   }) : undefined;
   console.log(`[turn] ${analysis.me.name} ${analysis.me.hp}/${analysis.me.maxHP} vs ${analysis.enemy.name} Lv${analysis.enemy.level} ~${analysis.enemy.hpPercent}%`);
-  const train = TARGET && team ? training({
+  const train = capOn && team ? training({
     target: TARGET, team: team.team, activeEC: team.activeEC, participants: team.participants,
     enemySpecies: state.enemy.active.species, enemyLevel: e.level, trainer: state.trainer, analysis, nuzlocke: NUZLOCKE,
   }) : undefined;
@@ -82,7 +85,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   if (nextFoes.length > 1) {
     latest.nextOptions = nextFoes.map((f) => {
       const a = analyze({ ...state, enemy: { active: f, bench: nextFoes.filter((x) => x !== f), abilityKnown: abilityKnown(f.species) } },
-        { preferLowLevel: TARGET > 0, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: true, myDamageScale: damageScale.get(f.ec) ?? 1 });
+        { preferLowLevel: capOn, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: true, myDamageScale: damageScale.get(f.ec) ?? 1 });
       const fb = fallbackAdvice(a, NUZLOCKE);
       return { foe: speciesName(f.species), action: fb.action, choice: fb.choice, reason: fb.reason };
     });
@@ -106,6 +109,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
       pokeDolls: pokeDolls(),
       ...(train ? { training: { target: train.target, tip: train.tip, members: train.members } } : {}),
       healOption: heal, cureOption: cure, healItems: healItems(meds),
+      ...(bossName ? { bossBattle: `${bossName} (gym leader / Elite Four): the level cap does NOT apply in this fight. Ignore EXP and levelling entirely; just win with no faints.` } : {}),
     }, bossBattle && BOSS_MODEL ? BOSS_MODEL : undefined);
     const warning = checkAdvice(advice, analysis, NUZLOCKE);
     // Never headline advice the numbers reject: show the calculator's pick and mention the rejected one.
@@ -226,7 +230,7 @@ function poll() {
   const foeKey = foe?.ec ?? s.wildEC;
   if (foeKey !== battleEC) {
     battleEC = foeKey; enemyPct = 100; battleTurn = 1; owned = reader.ownedSpecies();
-    console.log(`[foe] ${speciesName(foeMon.species)} OT="${foeMon.ot}" TID=${foeMon.tid} team=${s.enemyTeam.length} → ${trainer ? "trainer" : "wild"} (on-field via ${byRecord ? "record" : "fallback"})`);
+    console.log(`[foe] ${speciesName(foeMon.species)} OT="${foeMon.ot}" TID=${foeMon.tid} team=${s.enemyTeam.length} → ${trainer ? `trainer${s.trainerId ? ` #${s.trainerId}` : ""}${B2_BOSSES.has(s.trainerId ?? 0) && GAME.id === "b2" ? ` (${B2_BOSSES.get(s.trainerId!)}: cap off)` : ""}` : "wild"} (on-field via ${byRecord ? "record" : "fallback"})`);
   }
   const exact = foe !== undefined;
   if (s.used.length) battleTurn++;
@@ -270,7 +274,8 @@ function poll() {
   // Expected (not yet real) Dynamax: live HP isn't doubled yet, so double it to match the calc's Dynamax scaling.
   const foeLive = { ...enemyMon, dynamax: expectDmax || reallyDmax, hp: expectDmax && !reallyDmax ? enemyMon.hp * 2 : enemyMon.hp };
   dynamaxAllowed = dynamaxBattle || reallyDmax || !!meLive.dynamax;
-  bossBattle = dynamaxBattle;
+  bossName = GAME.id === "b2" ? B2_BOSSES.get(s.trainerId ?? 0) : undefined;
+  bossBattle = dynamaxBattle || !!bossName;
   current = {
     trainer,
     me: { active: meLive, bench: team.filter((m) => m !== me) },

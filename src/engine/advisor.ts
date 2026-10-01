@@ -84,7 +84,8 @@ const RUN_RULES = [
 - Treat koRisk.withCrit as a real danger when a safe option that costs little exists.
 - Never sacrifice a Pokémon, and never recommend a move that only wins on a good roll when a safe alternative exists.`,
   TARGET && `The player is levelling the team EVENLY to Lv ${TARGET} (the next boss / level cap), and over-levelled Pokémon get boxed.
-- training.members lists each Pokémon's level and EXP. Anyone who's been on the field gets full EXP, the rest get half.
+- training.members lists each Pokémon's level and EXP. ${GAME.expShareAll ? "Anyone who's been on the field gets full EXP, the rest get half." : "Only Pokémon that were on the field get EXP (split between them); the bench gets none."}
+- Only switch for EXP reasons to a Pokémon whose switches[].matchup.wins is true; a switch-in that loses will just have to switch back.
 - Only AFTER safety: prefer plays that give KOs and full EXP to the lowest-level Pokémon. Avoid using Pokémon at or above the cap for KOs.
   If the safest play uses a high-level Pokémon, pick the safe play.
 - training.tip is a deterministic suggestion for this. Follow it unless safety says otherwise.`,

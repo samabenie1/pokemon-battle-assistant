@@ -95,7 +95,7 @@ export class B2Reader {
     return party;
   }
 
-  poll(): (LiveSnapshot & { trainer: boolean }) | null {
+  poll(): (LiveSnapshot & { trainer: boolean; trainerId?: number }) | null {
     if (!this.connected()) return null;
     const party = this.party();
     const status = this.ds.u16(B2.battleStatus);
@@ -146,6 +146,7 @@ export class B2Reader {
       double, myActives: double ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: double ? [foes[0].ec, foes[1].ec] : [foes[0].ec],
       battleParty: mine, used,
       trainer: this.ds.u16(this.base + B2.enemyTrainerID) !== 0,
+      trainerId: this.ds.u16(this.base + B2.enemyTrainerID),
     };
   }
 

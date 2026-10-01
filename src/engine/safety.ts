@@ -73,7 +73,12 @@ export function checkAdvice(adv: Advice, a: Analysis, nuzlocke: boolean): string
     // If staying in is a sure KO, a switch-in that survives a normal (non-crit) hit is still the better bet.
     if (k && a.koRisk.maxRoll && !switchKills(a, adv.choice, false)) return null;
     if (k) return `Unsafe: ${adv.choice} can be KO'd switching in (${k.move} does up to ${k.worst}%${nuzlocke ? ", more with a crit" : ""}).`;
-    if (!a.switches.some((s) => sameMon(s.name, adv.choice))) return `${adv.choice} isn't an available switch-in.`;
+    const sw = a.switches.find((s) => sameMon(s.name, adv.choice));
+    if (!sw) return `${adv.choice} isn't an available switch-in.`;
+    // A switch-in that loses the exchange just gets switched back out next turn (free hits for the foe).
+    const danger = a.koRisk.maxRoll || (nuzlocke && a.koRisk.withCrit);
+    if (!sw.matchup.wins && !danger)
+      return `${adv.choice} loses the matchup vs ${a.enemy.name} (needs ${sw.matchup.myHits} hits, dies in ${sw.matchup.theirHits}), so it would just have to switch back out.`;
   }
   if (adv.action === "move" && stalled(a) && a.swap)
     return `${a.enemy.name} can heal (${a.enemyMoves.find((m) => HEALING.has(m.move))?.move}), so ${adv.choice} (${a.myMoves.find((m) => m.move === adv.choice)?.pctMax.join("–") ?? "?"}%) won't keep up. Switch to ${a.swap.to} instead.`;

@@ -27,3 +27,9 @@ export const B2 = {
   },
   enemyBattlerOffset: 0x1c,
 } as const;
+
+/** Boss trainers by trainer ID (NDS-Ironmon-Tracker TrainerData.lua). The level cap doesn't apply in these fights. */
+export const B2_BOSSES = new Map<number, string>([
+  [156, "Cheren"], [157, "Roxie"], [154, "Burgh"], [153, "Elesa"], [158, "Clay"], [155, "Skyla"], [159, "Drayden"], [160, "Marlon"],
+  [38, "Shauntal"], [39, "Marshal"], [40, "Grimsley"], [41, "Caitlin"], [341, "Iris"],
+]);

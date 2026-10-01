@@ -60,6 +60,8 @@ export interface LiveSnapshot {
   inBattle: boolean;
   /** Set by readers that know it directly (Black 2: the enemy trainer ID); otherwise the server infers it. */
   trainer?: boolean;
+  /** Black 2: the enemy trainer's index in the game's trainer table (0 = wild). */
+  trainerId?: number;
   counter: number;
   party: Mon[];
   wild: Mon | null;
