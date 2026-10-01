@@ -71,7 +71,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
     maxHP: e.maxHP, hpPercent: e.hpPercent, myLevel: analysis.me.level, turn: battleTurn, balls,
     baseRate: romCatchRate(state.enemy.active.species),
   }) : undefined;
-  console.log(`[turn] ${analysis.me.name} ${analysis.me.hp}/${analysis.me.maxHP} vs ${analysis.enemy.name} Lv${analysis.enemy.level} ~${analysis.enemy.hpPercent}%`);
+  console.log(`[turn] ${analysis.me.name} ${analysis.me.hp}/${analysis.me.maxHP}${analysis.me.status ? ` [${analysis.me.status}]` : ""} vs ${analysis.enemy.name} Lv${analysis.enemy.level} ~${analysis.enemy.hpPercent}%${analysis.enemy.status ? ` [${analysis.enemy.status}]` : ""}${b2Reader ? ` ${b2Reader.debugStatus()}` : ""}`);
   const train = capOn && team ? training({
     target: TARGET, team: team.team, activeEC: team.activeEC, participants: team.participants,
     enemySpecies: state.enemy.active.species, enemyLevel: e.level, trainer: state.trainer, analysis, nuzlocke: NUZLOCKE,
@@ -96,8 +96,10 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   }
   // Obvious turns don't need the AI (saves API cost): a KO that lands before the enemy moves, or a safe,
   // winning matchup with no KO risk and no better switch. The calculator's pick is shown directly.
-  const sureKO = analysis.iMoveFirst === true && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp);
-  const easy = !analysis.between && !analysis.swap && !analysis.koRisk.maxRoll && !analysis.koRisk.withCrit
+  // Asleep/frozen: attacking usually does nothing, so the full advisor (cure / switch) decides, never a shortcut.
+  const cantAct = analysis.me.status === "slp" || analysis.me.status === "frz";
+  const sureKO = !cantAct && analysis.iMoveFirst === true && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp);
+  const easy = !cantAct && !analysis.between && !analysis.swap && !analysis.koRisk.maxRoll && !analysis.koRisk.withCrit
     && analysis.activeMatchup.wins && !Object.values(analysis.enemy.boosts ?? {}).some((v) => (v as number) > 0) && !analysis.dynamaxOption?.recommend;
   if (sureKO || easy) {
     const fb = fallbackAdvice(analysis, NUZLOCKE);
@@ -189,7 +191,16 @@ function poll() {
       try { tips = bagTips(s.party, reader.generalItems(), reader.machines(), TARGET || 100, b2Reader?.machineData()); } catch (e) { console.log("[bag]", (e as Error).message); }
       tipsAt = Date.now();
     }
-    return setStatus("waiting", { topUp: topUp(team, reader.medicine()), bagTips: tips });
+    // Status conditions persist after battle in Gen 5 (sleep included): warn and name the cure in the bag.
+    const NAMES: Record<string, string> = { slp: "asleep", frz: "frozen", par: "paralyzed", brn: "burned", psn: "poisoned", tox: "badly poisoned" };
+    const statusTips = s.party.flatMap((m) => {
+      const st = statusName(m.status);
+      if (!st) return [];
+      const cure = cureFor(st, reader.medicine());
+      const turns = st === "slp" ? ` (${m.status & 7} turn${(m.status & 7) === 1 ? "" : "s"} left)` : "";
+      return [`⚠ ${monLabel(m)} is ${NAMES[st]}${turns}: ${cure ? `use ${cure.name} (×${cure.count})` : "no cure in the bag; heal at a Pokémon Center"}${st === "slp" ? ", or don't lead with it" : ""}.`];
+    });
+    return setStatus("waiting", { topUp: topUp(team, reader.medicine()), bagTips: [...statusTips, ...tips] });
   }
   // The opponent's party blocks start at the wild slot: 1 Pokémon for wild battles, more for trainers.
   // ---- Double battles: separate analysis and advice ----

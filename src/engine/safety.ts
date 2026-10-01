@@ -38,6 +38,13 @@ export function fallbackAdvice(a: Analysis, nuzlocke: boolean): Advice {
   }
   if (a.swap && (stalled(a) || a.enemyMoves.every((m) => m.category === "Status")) && !sureKO(a))
     return { ...base, action: "switch", choice: a.swap.to, reason: a.swap.reason, alternative: a.myMoves[0]?.move ?? "–" };
+  // Asleep/frozen: a move choice is likely wasted. Switch to a safe winner if there is one (switching keeps the
+  // sleep counter, but the switch-in can act); otherwise pick the best move in case it wakes up.
+  if (a.me.status === "slp" || a.me.status === "frz") {
+    const out = a.switches.filter((s) => s.matchup.wins && !switchKills(a, s.name, nuzlocke))
+      .sort((x, y) => (x.takesWorst?.pctMax[1] ?? 0) - (y.takesWorst?.pctMax[1] ?? 0))[0];
+    if (out) return { ...base, action: "switch", choice: out.name, reason: `${a.me.name} is ${a.me.status === "slp" ? "asleep" : "frozen"}; ${out.name} wins the matchup and takes at most ${out.takesWorst?.pctMax[1] ?? 0}% coming in.`, alternative: a.myMoves[0]?.move ?? "–" };
+  }
   const ko = sureKO(a);
   if (!ko && a.dynamaxOption?.recommend && a.dynamaxOption.best)
     return { ...base, action: "move", choice: `Dynamax: ${a.dynamaxOption.best.move}`, reason: a.dynamaxOption.recommend, alternative: a.myMoves[0]?.move ?? "–" };

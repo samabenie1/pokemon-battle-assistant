@@ -93,6 +93,17 @@ export class B2Reader {
     return out;
   }
 
+  /** Diagnostic: raw battler +0x20 (live status, layout not mapped yet) vs the PK5 status for both actives. */
+  debugStatus() {
+    const out: string[] = [];
+    for (const [side, off] of [["me", 0], ["foe", B2.enemyBattlerOffset]] as const) {
+      const b = this.ds.ptr(this.base + B2.mainBattleDataPtr + off);
+      const pk = b ? this.pkm(this.ds.ptr(b + B2.battler.pkm)) : null;
+      if (b) out.push(`${side}:bt20=${this.ds.bytes(b + 0x20, 12).toString("hex")} pk=${pk?.status ?? "?"}`);
+    }
+    return `{${out.join(" ")}}`;
+  }
+
   /** Diagnostic: every pointer slot after mainBattleDataPtr (4 clients × 7), with species/HP/OT. Used to find
    *  where an AI ally's Pokémon live in partner (multi) battles, which aren't mapped yet. */
   debugBattlers(): string[] {
