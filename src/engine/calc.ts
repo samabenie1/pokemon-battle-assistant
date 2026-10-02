@@ -67,13 +67,20 @@ export function toCalc(m: Mon, curHPOverride?: number, hideAbility = false, with
   });
   // @smogon/calc doubles originalCurHP for a Dynamaxed Pokémon, while the live HP from memory is already
   // Dynamax-scaled, so halve it back.
+  // Transformed foe: it copied my stats but keeps its own HP.
+  const tHP = (m as Mon & { transformHP?: number }).transformHP;
+  if (tHP) { p.rawStats.hp = tHP; p.stats.hp = tHP; }
   const hp = curHPOverride ?? m.hp;
   const base = dynamax ? Math.round(hp / 2) : hp;
   if (base > 0 && base <= p.rawStats.hp) p.originalCurHP = base;
   return p;
 }
 
-export function hit(att: Pokemon, def: Pokemon, move: string, field = new Field()) {
+/** Weather for this analysis (set by analyze; Gen 5 ability weather lasts the whole battle). */
+export type Weather = "Sun" | "Rain" | "Sand" | "Hail";
+export const WEATHER_ABILITY: Record<string, Weather> = { Drought: "Sun", Drizzle: "Rain", "Sand Stream": "Sand", "Snow Warning": "Hail" };
+let weatherNow: Weather | undefined;
+export function hit(att: Pokemon, def: Pokemon, move: string, field = new Field({ weather: weatherNow })) {
   const mv = new Move(gen, move, { useMax: att.isDynamaxed });
   const r = calculate(gen, att, def, mv, field);
   const [lo, hi] = r.range();
@@ -90,6 +97,47 @@ export function hit(att: Pokemon, def: Pokemon, move: string, field = new Field(
 }
 
 export type Hit = ReturnType<typeof hit>;
+
+/** Effective attacking power of a move for this Pokémon: BP × STAB × hits × (its matching attack stat ÷ its better
+ *  attack stat) × its ability's effect on that move (Technician, Reckless, Iron Fist, Adaptability, Huge Power…),
+ *  measured by running the real damage calc against a neutral dummy with and without the ability. Held items are
+ *  left out (the planner reasons about items separately). */
+export function movePower(mon: Mon, move: string) {
+  const mv = new Move(gen, move);
+  const bare = { ...mon, heldItem: 0 };
+  const p = toCalc(bare);
+  const bp = mv.bp || weightBP(move, p.weightkg);
+  if (mv.category === "Status" || !bp) return 0;
+  const stab = p.types.includes(mv.type) ? 1.5 : 1;
+  const hits = Array.isArray(mv.hits) ? 3.1 : typeof mv.hits === "number" && mv.hits > 1 ? mv.hits : 1;
+  const stat = mv.category === "Physical" ? p.stats.atk : p.stats.spa;
+  const turns = TWO_TURN.has(move) && !(move === "Solar Beam" && p.ability === "Drought") ? 2 : 1;
+  return bp * hits * stab * (stat / Math.max(p.stats.atk, p.stats.spa)) * abilityFactor(bare, move) / turns;
+}
+
+/** Moves that take two turns per hit (charge or recharge), so their power per turn is halved. */
+const TWO_TURN = new Set(["Shadow Force", "Fly", "Dig", "Dive", "Bounce", "Sky Drop", "Sky Attack", "Razor Wind",
+  "Skull Bash", "Solar Beam", "Freeze Shock", "Ice Burn", "Hyper Beam", "Giga Impact", "Blast Burn", "Hydro Cannon",
+  "Frenzy Plant", "Roar of Time", "Rock Wrecker"]);
+
+/** Typical base power of weight-based moves (the calc lists them as 0): Heavy Slam / Heat Crash by the user's weight
+ *  vs a typical 50 kg target, Low Kick / Grass Knot at a typical 60. */
+function weightBP(move: string, userKg: number) {
+  if (move === "Heavy Slam" || move === "Heat Crash") { const r = userKg / 50; return r >= 5 ? 120 : r >= 4 ? 100 : r >= 3 ? 80 : r >= 2 ? 60 : 40; }
+  return move === "Low Kick" || move === "Grass Knot" ? 60 : 0;
+}
+
+const dummies = new Map<number, Pokemon>();
+function abilityFactor(mon: Mon, move: string) {
+  const lv = mon.level ?? 50;
+  if (!dummies.has(lv)) dummies.set(lv, new Pokemon(gen, "Mew", { level: lv, ability: "Synchronize" }));
+  const def = dummies.get(lv)!;
+  const avg = (att: Pokemon) => { const [lo, hi] = calculate(gen, att, def, new Move(gen, move)).range(); return (lo + hi) / 2; };
+  try {
+    const neutral = avg(toCalc(mon, undefined, true));
+    return neutral > 0 ? avg(toCalc(mon)) / neutral : 1;
+  } catch { return 1; }
+}
 
 // Setup moves: the stage gain a switch gives away (a switch = a free turn for the enemy to use one).
 const SETUP: Record<string, Partial<Record<"atk" | "spa" | "spe" | "def" | "spd", number>>> = {
@@ -125,10 +173,16 @@ function matchup(mine: Hit | undefined, theirs: Hit | undefined, myHP: number, t
   return { myHits, theirHits, wins, margin: theirHits - myHits + (faster ? 0.5 : 0) - (switchingIn ? 1 : 0) };
 }
 
+/** Drop over-leveled Pokémon from a candidate list unless they're the only candidates. */
+export const preferNotAhead = <T extends { overLeveled?: boolean }>(list: T[]) =>
+  list.some((x) => !x.overLeveled) ? list.filter((x) => !x.overLeveled) : list;
+
 /** preferLowLevel: among bench Pokémon that win the matchup, suggest the lowest level (training mode).
  *  dynamaxUsed: the player already Dynamaxed this battle (one per battle). */
 /** myDamageScale: observed/predicted damage ratio for my attacks on this enemy (hidden ability, Intimidate…). */
-export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number; runAttempts?: number } = {}) {
+/** bide: the enemy is storing damage with Bide (storedHP so far); it comes back doubled to whoever is in front. */
+export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number; runAttempts?: number; bide?: { storedHP: number }; weather?: Weather } = {}) {
+  weatherNow = opts.weather;
   const k = opts.myDamageScale ?? 1;
   const scaleHit = <T extends { pctMax: number[]; ofCurrent: number[]; ko: string; defenderHP: number }>(h: T): T => {
     if (k === 1) return h;
@@ -144,8 +198,13 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const enemy = toCalc(enemyMon, undefined, hideAbility, true);
   if (s.enemy.hpPercent !== undefined) enemy.originalCurHP = Math.max(1, Math.round(enemy.maxHP() * s.enemy.hpPercent / 100));
 
-  const myMoves = s.me.active.moves.filter(Boolean).map((m, i) => ({ ...scaleHit(hit(me, enemy, moveName(m))), pp: s.me.active.pp[i] }))
-    .sort((a, b) => b.pctMax[1] - a.pctMax[1]);
+  // Bide: every HP of damage dealt now comes back doubled. bideBackfire = after this hit, the release would KO me.
+  const releaseHP = opts.bide ? 2 * opts.bide.storedHP : 0;
+  const myMoves = s.me.active.moves.filter(Boolean).map((m, i) => {
+    const h = scaleHit(hit(me, enemy, moveName(m)));
+    const dealt = Math.min(enemy.curHP(), (h.pctMax[1] / 100) * enemy.maxHP());
+    return { ...h, pp: s.me.active.pp[i], ...(opts.bide && h.category !== "Status" ? { bideBackfire: releaseHP + 2 * dealt >= me.curHP() } : {}) };
+  }).sort((a, b) => b.pctMax[1] - a.pctMax[1]);
   const enemyMoves = usableMoves(enemyMon).map((m) => ({ ...hit(enemy, me, moveName(m)), pp: enemyMon.pp[enemyMon.moves.indexOf(m)] }))
     .sort((a, b) => b.pctMax[1] - a.pctMax[1]);
 
@@ -166,17 +225,30 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     }
   }
 
+  // Training mode: a Pokémon 4+ levels above the team average is "ahead" and only switched in as a last resort
+  // (Sam, 10-01: stop sending in Kyogre at Lv 22 while the rest are ~16).
+  const team = [s.me.active, ...s.me.bench];
+  // Median, not mean: one low trainee (a Lv17 Natu) shouldn't hide that a Lv30 is ahead of the 25s and 27s.
+  // 3+ levels over it counts as ahead (Sam, 10-02: "stop recommending MALT, he is 30 and I have 25s and 27s").
+  const lv = team.map((m) => m.level ?? 1).sort((a, b) => a - b), mid = lv.length >> 1;
+  const medLevel = lv.length % 2 ? lv[mid] : (lv[mid - 1] + lv[mid]) / 2;
+  const ahead = (m: Mon) => !!opts.preferLowLevel && (m.level ?? 1) >= medLevel + 3;
   const switches = s.me.bench.filter((m) => m.hp > 0).map((b) => {
     const bp = toCalc(b);
-    const worstNow = usableMoves(enemyMon).map((m) => hit(enemy, bp, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
-    const worstBoosted = setupMove ? usableMoves(enemyMon).map((m) => hit(enemyAfterSetup, bp, moveName(m))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0] : undefined;
+    // A switch-in with Drought/Drizzle/… brings its weather (it's set on entry, before the enemy's hit).
+    const f = new Field({ weather: WEATHER_ABILITY[abilityName(b.ability)] ?? opts.weather });
+    const worstNow = usableMoves(enemyMon).map((m) => hit(enemy, bp, moveName(m), f)).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
+    const worstBoosted = setupMove ? usableMoves(enemyMon).map((m) => hit(enemyAfterSetup, bp, moveName(m), f)).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0] : undefined;
     const worstIn = worstBoosted && worstBoosted.pctMax[1] > (worstNow?.pctMax[1] ?? 0) ? worstBoosted : worstNow;
-    const bestOut = b.moves.filter(Boolean).map((m) => scaleHit(hit(bp, enemy, moveName(m)))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
+    const bestOut = b.moves.filter(Boolean).map((m) => scaleHit(hit(bp, enemy, moveName(m), f))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const st = statusOf(b.status);
     const disabled = st === "slp" || st === "frz"; // can't act after switching in
+    // Bide's release hits the switch-in (Ghost types are immune).
+    const bidePct = opts.bide && !bp.types.includes("Ghost") ? Math.round(100 * releaseHP / bp.maxHP()) : 0;
+    const bideWorst = bidePct > (worstIn?.pctMax[1] ?? 0) ? { move: "Bide (release)", pctMax: [bidePct, bidePct] } : null;
     return {
-      name: monLabel(b), level: b.level, hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
-      takesWorst: worstIn && { move: worstIn.move, pctMax: worstIn.pctMax }, bestMove: bestOut && { move: bestOut.move, pctMax: bestOut.pctMax, ko: bestOut.ko },
+      name: monLabel(b), level: b.level, overLeveled: ahead(b), hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
+      takesWorst: bideWorst ?? (worstIn && { move: worstIn.move, pctMax: worstIn.pctMax }), bestMove: bestOut && { move: bestOut.move, pctMax: bestOut.pctMax, ko: bestOut.ko },
       speed: effSpeed(bp),
       matchup: disabled
         ? { myHits: 10, theirHits: 0, wins: false, margin: -10 }
@@ -187,18 +259,20 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   // Can the enemy KO my active Pokémon this turn? (max roll, and max roll + crit)
   const myPct = (100 * me.curHP()) / me.maxHP();
   const worstMax = enemyMoves[0]?.pctMax[1] ?? 0;
-  const koRisk = { move: enemyMoves[0]?.move ?? null, maxRoll: worstMax >= myPct, withCrit: worstMax * 1.5 >= myPct };
+  const bideKOs = !!opts.bide && releaseHP >= me.curHP();
+  const koRisk = bideKOs ? { move: "Bide (release)", maxRoll: true, withCrit: true }
+    : { move: enemyMoves[0]?.move ?? null, maxRoll: worstMax >= myPct, withCrit: worstMax * 1.5 >= myPct };
 
   // Only suggest a swap when it clearly beats staying in.
   // Safety first: the winning switch-in that takes the least damage; level only breaks near-ties (training mode).
   const taken = (x: (typeof switches)[number]) => x.takesWorst?.pctMax[1] ?? 0;
-  const best = [...switches].filter((x) => x.matchup.wins)
+  const best = preferNotAhead([...switches].filter((x) => x.matchup.wins))
     .sort((a, b) => (Math.abs(taken(a) - taken(b)) > 10 ? taken(a) - taken(b) : 0)
       || (opts.preferLowLevel ? (a.level ?? 0) - (b.level ?? 0) : 0) || b.matchup.margin - a.matchup.margin)[0];
   // Enemy has no damaging moves: switching is free, so bring in the hardest hitter (chip damage
   // loses to Pain Split / Recover / screens, and there's nothing to fear).
-  const enemyHarmless = enemyMoves.every((m) => m.category === "Status" || m.pctMax[1] === 0);
-  const hitter = enemyHarmless ? [...switches].sort((x, y) => (y.bestMove?.pctMax[0] ?? 0) - (x.bestMove?.pctMax[0] ?? 0))[0] : undefined;
+  const enemyHarmless = !opts.bide && enemyMoves.every((m) => m.category === "Status" || m.pctMax[1] === 0);
+  const hitter = enemyHarmless ? preferNotAhead([...switches]).sort((x, y) => (y.bestMove?.pctMax[0] ?? 0) - (x.bestMove?.pctMax[0] ?? 0))[0] : undefined;
   const freeSwap = hitter && (hitter.bestMove?.pctMax[0] ?? 0) > (myMoves[0]?.pctMax[0] ?? 0) * 1.5
     ? { to: hitter.name, reason: `${enemy.name} has no damaging moves, so switching is free: ${hitter.name}'s ${hitter.bestMove?.move} does ${hitter.bestMove?.pctMax.join("–")}% vs ${monLabel(s.me.active)}'s best ${myMoves[0]?.pctMax.join("–")}%.` }
     : null;
@@ -218,6 +292,8 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     myMoves, enemyMoves, switches, trainer: s.trainer,
     enemyOutOfPP: enemyMon.moves.filter((mv, i) => mv && enemyMon.pp[i] === 0).map(moveName),
     damageScale: k, activeMatchup: activeMatch, swap, koRisk,
+    weather: opts.weather ?? null,
+    enemyBide: opts.bide ? { storedHP: opts.bide.storedHP, releaseHP, releaseKOs: bideKOs } : null,
     // Wild battles: escape odds (Gen 3+): always if at least as fast, else (A×128/B + 30×attempts)/256.
     run: s.trainer ? null : (() => {
       const A = effSpeed(me), B = effSpeed(enemy);

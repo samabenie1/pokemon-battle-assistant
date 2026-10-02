@@ -3,7 +3,8 @@
 import { Generations, Move } from "@smogon/calc";
 import type { Mon } from "../pk8.ts";
 import { monLabel, moveName, speciesName } from "../names.ts";
-import { toCalc } from "./calc.ts";
+import { HM_MOVES } from "../offsets/b2rom.ts";
+import { movePower } from "./calc.ts";
 import { GAME } from "../game.ts";
 import { readFileSync, existsSync } from "node:fs";
 
@@ -21,15 +22,16 @@ const STATUS_VALUE: Record<string, number> = {
   "Imprison": 5, "Safeguard": 20, "Disable": 25, "Endure": 20, "Supersonic": 25, "Confuse Ray": 35, "Poison Gas": 30,
 };
 
+/** Status moves strong enough to keep over an attack (Sam, 10-01: "forget status moves first, unless they are OP"). */
+export const isOPStatus = (move: string) => (STATUS_VALUE[move] ?? 0) >= 70;
+/** A status move that should be the first thing forgotten. */
+export const isWeakStatus = (move: string) => new Move(gen, move).category === "Status" && !isOPStatus(move);
+
 function value(mon: Mon, move: string) {
   const mv = new Move(gen, move);
   if (mv.category === "Status") return STATUS_VALUE[move] ?? 25;
   if (!mv.bp) return 40; // variable power (Endeavor, Seismic Toss…)
-  const p = toCalc(mon);
-  const stab = p.types.includes(mv.type) ? 1.5 : 1;
-  const stat = mv.category === "Physical" ? p.stats.atk : p.stats.spa;
-  const hits = Array.isArray(mv.hits) ? 3.1 : 1;
-  return mv.bp * hits * stab * (stat / Math.max(p.stats.atk, p.stats.spa));
+  return movePower(mon, move); // ability included
 }
 
 /** Rank moves worst-first. Coverage: a damaging move that shares its type with a stronger move is redundant
@@ -38,12 +40,15 @@ function rank(mon: Mon, moves: string[]) {
   const base = moves.map((m) => ({ m, v: value(mon, m), mv: new Move(gen, m) }));
   return base.map((x) => {
     const redundant = x.mv.category !== "Status" && base.some((y) => y !== x && y.mv.category !== "Status" && y.mv.type === x.mv.type && y.v >= x.v);
-    return { m: x.m, v: redundant ? x.v * 0.5 : x.v, redundant, status: x.mv.category === "Status" };
+    // Weak status moves always go first; OP ones (Spore, Swords Dance, Recover…) compete on value like attacks.
+    // HM moves can't be forgotten (only the Move Deleter removes them): never rank one as the move to drop.
+    const v = (redundant ? x.v * 0.5 : x.v) - (isWeakStatus(x.m) ? 1000 : 0) + (HM_MOVES.has(x.m) ? 1e6 : 0);
+    return { m: x.m, v, redundant, status: x.mv.category === "Status" };
   }).sort((a, b) => a.v - b.v);
 }
 
 const whyWorst = (mon: Mon, w: { status: boolean; redundant: boolean }) =>
-  w.status ? "least useful status move" : w.redundant ? "same type as a stronger move, so it adds no coverage" : `weakest attack for ${speciesName(mon.species)}'s stats`;
+  w.status ? "weakest status move (status moves go first unless they're strong)" : w.redundant ? "same type as a stronger move, so it adds no coverage" : `weakest attack for ${speciesName(mon.species)}'s stats`;
 
 /** The move to drop first, and why. */
 export function dropCandidate(mon: Mon) {

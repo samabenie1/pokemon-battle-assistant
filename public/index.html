@@ -33,14 +33,27 @@
   .eff2 { color: var(--good); font-weight: 700; } .eff0 { color: var(--bad); } .effh { color: var(--warn); }
   h3 { margin: 0 0 8px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
   .thinking { color: var(--muted); font-size: 22px; }
+  /* Support note: slides up from the bottom now and then, only while no battle is on. */
+  #support { position: fixed; left: 50%; bottom: 12px; transform: translate(-50%, 140%); max-width: min(560px, calc(100% - 32px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; color: var(--muted);
+    font-size: 13px; display: flex; gap: 12px; align-items: center; opacity: 0; transition: transform .4s ease, opacity .4s ease; pointer-events: none; }
+  #support.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+  #support a { color: var(--text); font-weight: 600; white-space: nowrap; }
+  #support button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 2px; }
   #moves tr[data-move] { cursor: pointer; }
   #moves tr[data-move]:hover td { background: rgba(255,255,255,.04); }
   .est button { background: var(--line); color: var(--text); border: 0; border-radius: 6px; padding: 3px 8px; margin: 6px 4px 0 0; cursor: pointer; font: inherit; font-size: 13px; }
   .est button:hover { background: var(--accent); }
+  .flash { animation: flash 1.2s ease-in-out 3; border-radius: 8px; }
+  @keyframes flash { 50% { background: rgba(62,207,142,.18); } }
   @media (max-width: 700px) { .versus { grid-template-columns: 1fr; } .rec .choice { font-size: 32px; } body { padding: 16px; } }
 </style>
 </head>
 <body>
+<div id="support" role="note"><span>Finding this useful? It's a one-person project:
+  <a href="https://buymeacoffee.com/samabenie" target="_blank" rel="noopener">☕ Buy me a coffee</a>.
+  Unofficial fan project, not affiliated with Nintendo / GAME FREAK.</span>
+  <button aria-label="Hide" onclick="hideSupport(true)">✕</button></div>
 <div class="wrap">
   <div class="panel rec" id="rec"><div class="thinking">Waiting for a battle…</div></div>
   <div class="versus" id="versus"></div>
@@ -108,6 +121,11 @@ function renderDoubles(d) {
 }
 
 // Level-up move offers: a box only when the game is asking right now; upcoming ones as one small line.
+function skipStep(btn, id) {
+  btn.closest("div").style.opacity = .4;
+  fetch(`/plan-skip?id=${id}`, { method: "POST" });
+}
+
 function levelUpBox(d) {
   const tips = d.newMoves ?? [];
   const now = tips.filter((t) => t.when === "now"), next = tips.filter((t) => t.when === "next");
@@ -130,21 +148,32 @@ function render(d) {
       ? `<div style="margin-top:12px"><span class="label" style="color:var(--warn)">HEAL BEFORE THE NEXT FIGHT</span>` +
         d.topUp.map((m) => `<div style="font-size:18px;margin-top:4px"><b>${esc(m.name)}</b> ${m.hp}/${m.maxHP}${m.item ? ` → ${esc(m.item)}` : ""}</div>`).join("") + `</div>`
       : "";
-    const bag = (d.bagTips ?? []).length
-      ? `<div style="margin-top:12px"><span class="label" style="color:var(--accent)">BAG TIPS</span>` +
-        d.bagTips.map((t) => `<div style="margin-top:4px">• ${esc(t)}</div>`).join("") + `</div>`
+    // Plan steps flash open when there's something new, then fold into one line; a short reminder every 15 min.
+    const ids = (d.planSteps ?? []).map((x) => x.id);
+    if (ids.some((id) => !seenSteps.has(id))) { ids.forEach((id) => seenSteps.add(id)); openUntil = Date.now() + 45_000; }
+    const open = Date.now() < openUntil;
+    if (open) { clearTimeout(foldTimer); foldTimer = setTimeout(() => render(lastData), openUntil - Date.now() + 100); }
+    const folded = ids.length && !open
+      ? `<div style="margin-top:6px;cursor:pointer" onclick="openUntil = Date.now() + 60_000; render(lastData)">📋 <b>${ids.length} bag tip${ids.length > 1 ? "s" : ""}</b> <span class="meta">(tap to show)</span></div>` : "";
+    const steps = folded || (d.planSteps ?? []).map((x) => `<div style="margin-top:6px;display:flex;gap:8px;align-items:baseline">
+        <button onclick="skipStep(this, '${encodeURIComponent(x.id)}')" title="Skip this step (won't be suggested again)"
+          style="background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;cursor:pointer;padding:0 6px">✕</button>
+        <div>📋 <b>${esc(x.text)}</b><div class="meta">${esc(x.why)}</div></div></div>`).join("");
+    const flash = open && ids.length ? ' class="flash"' : "";
+    const bag = (d.bagTips ?? []).length || steps
+      ? `<div style="margin-top:12px"${flash}><span class="label" style="color:var(--accent)">BAG TIPS</span>` + steps +
+        (d.bagTips ?? []).map((t) => `<div style="margin-top:4px">• ${esc(t)}</div>`).join("") + `</div>`
       : "";
-    document.getElementById("rec").innerHTML = `<div class="thinking">${esc(STATUS[d.status] ?? d.status)}</div>${levelUpBox(d)}${heal}${bag}`;
+    const next = d.nextPick ? `<div class="label">THEIR NEXT POKÉMON ISN'T OUT YET · ${d.nextPick.action === "switch" ? "SWITCH TO" : ""}</div>
+      <div class="choice">${esc(d.nextPick.choice)}</div><div class="reason">${esc(d.nextPick.reason)}</div>` : "";
+    document.getElementById("rec").innerHTML = next || `<div class="thinking">${esc(STATUS[d.status] ?? d.status)}</div>${levelUpBox(d)}${heal}${bag}`;
     return;
   }
   document.getElementById("versus").innerHTML = mon("You", a.me) + mon(a.trainer ? "Trainer's" : "Wild", a.enemy, d.estimated);
   if (a.enemyBench.length) document.querySelectorAll("#versus .mon")[1].insertAdjacentHTML("beforeend",
     `<div class="meta">Still to come: ${a.enemyBench.map((m) => `${esc(m.name)} Lv ${m.level}`).join(", ")}</div>`);
   const rec = document.getElementById("rec");
-  if (d.nextOptions) {
-    rec.innerHTML = `<div class="label">NEXT POKÉMON NOT OUT YET · READ ITS NAME IN-GAME</div>` +
-      d.nextOptions.map((o) => `<div style="margin-top:10px"><div style="font-size:26px;font-weight:800">If ${esc(o.foe)}: ${o.action === "switch" ? "switch to " : ""}${esc(o.choice)}</div><div class="meta">${esc(o.reason)}</div></div>`).join("");
-  } else if (d.advice) {
+  if (d.advice) {
     rec.innerHTML = `<div class="label">${a.between ? `NEXT UP: ${esc(a.enemy.name)}${a.enemy.dynamax ? " (expect Dynamax)" : ""} · ` : ""}${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.action === "item" ? "USE ITEM" : d.advice.action === "run" ? "RUN AWAY" : "USE"}</div>
       <div class="choice">${esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
       <div class="alt">Alternative: ${esc(d.advice.alternative)}</div>
@@ -238,8 +267,39 @@ function render(d) {
     (d.advice ? ` · ${d.advice.model}, ${(d.advice.ms / 1000).toFixed(1)}s` : "");
 }
 
-const es = new EventSource("/events");
-es.onmessage = (e) => render(JSON.parse(e.data));
+let lastData = null, openUntil = 0, foldTimer = 0;
+const seenSteps = new Set();
+// Reconnect on our own: after a server restart Firefox's EventSource sometimes gives up and the page sits on stale
+// data, so drop the stream and reopen it every 2 s until messages flow again.
+let es = null;
+function connect() {
+  es?.close();
+  es = new EventSource("/events");
+  es.onmessage = (e) => { lastData = JSON.parse(e.data); render(lastData); };
+  es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+}
+connect();
+
+// Support note: never during a battle or while tips are flashing; first after 10 min, then at most every 45 min,
+// for 15 s. ✕ snoozes it for a week (per browser).
+const SUPPORT_ON = document.body.dataset.support === "1";
+let supportShownAt = Date.now() - 35 * 60_000, supportTimer = 0;
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+function hideSupport(snooze) {
+  document.getElementById("support").classList.remove("show");
+  if (snooze) store.set("pba-support-snooze", String(Date.now() + 7 * 864e5));
+}
+setInterval(() => {
+  if (!SUPPORT_ON || document.hidden) return;
+  if (Number(store.get("pba-support-snooze") ?? 0) > Date.now()) return;
+  const quiet = lastData && lastData.status !== "battle" && !lastData.newMoves?.length && Date.now() > openUntil;
+  if (!quiet || Date.now() - supportShownAt < 45 * 60_000) return;
+  supportShownAt = Date.now();
+  document.getElementById("support").classList.add("show");
+  clearTimeout(supportTimer); supportTimer = setTimeout(() => hideSupport(false), 15_000);
+}, 30_000);
+// Fold the tips back up after their flash, and re-flash them every 15 minutes.
+setInterval(() => { if (lastData?.planSteps?.length) { openUntil = Date.now() + 30_000; render(lastData); } }, 15 * 60_000);
 </script>
 </body>
 </html>

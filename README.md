@@ -103,6 +103,7 @@ Contributions welcome, especially live status conditions and double battles.
 | `PBA_NUZLOCKE` | off | `1` = never accept KO risk when a safe option exists |
 | `PBA_GAME` | `swsh` | `b2` = Black 2 in melonDS (`npm run b2` sets it) |
 | `PBA_PORT` | `7878` | |
+| `PBA_SUPPORT` | `1` | `0` hides the occasional Buy Me a Coffee note |
 | `PBA_SOURCE` | live | `demo` for the sample battle |
 
 ## Per-save notes (optional files in `data/`, all ignored by git)
@@ -113,6 +114,12 @@ Contributions welcome, especially live status conditions and double battles.
 | `ignored-items.json` | item ids to never suggest (e.g. if the bag data disagrees with what you have) |
 | `not-able.json`, `tms-checked.json` | TMs a Pokémon can't learn / TMs you've already tried (randomized compatibility) |
 | `dead.json` | Nuzlocke deaths, for your own records |
+
+## Support
+
+This is a one-person project. If it saved one of your Nuzlocke runs, you can
+[buy me a coffee](https://buymeacoffee.com/samabenie) ☕. The page shows a small note about this now and then, never during
+a battle; ✕ hides it for a week, and `PBA_SUPPORT=0` turns it off.
 
 ## Credits
 

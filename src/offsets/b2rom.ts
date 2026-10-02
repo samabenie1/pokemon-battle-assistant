@@ -38,5 +38,10 @@ export function machineSlot(item: number) {
   return -1;
 }
 
+/** Moves currently taught by HMs (vanilla until the RAM table is read). HM moves can't be forgotten outside the
+ *  Mistralton Move Deleter, so nothing may suggest replacing one (Sam, 10-02). */
+export const HM_MOVES = new Set(["Cut", "Fly", "Surf", "Strength", "Waterfall", "Dive"]);
+export function setHMMoves(names: string[]) { HM_MOVES.clear(); names.filter(Boolean).forEach((n) => HM_MOVES.add(n)); }
+
 export const machineLabel = (slot: number) =>
   slot < 92 ? `TM${String(slot + 1).padStart(2, "0")}` : slot < 98 ? `HM0${slot - 91}` : `TM${slot - 5}`;

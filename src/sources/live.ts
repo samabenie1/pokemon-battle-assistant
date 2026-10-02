@@ -84,6 +84,8 @@ export interface LiveSnapshot {
   battleParty: BattleMon[];
   /** Moves whose PP dropped since the previous poll: [species, moveId]. */
   used: [number, number][];
+  /** Move ids whose PP dropped on the foe's side since the previous poll (Black 2 only). */
+  foeUsed?: number[];
 }
 
 export class LiveReader {

@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import { Generations, Move } from "@smogon/calc";
 import { expForLevel, type Mon } from "../pk8.ts";
 import { moveName, speciesName } from "../names.ts";
-import { toCalc } from "./calc.ts";
+import { movePower, toCalc } from "./calc.ts";
 import { GAME } from "../game.ts";
-import { canLearn, machineLabel, machineSlot } from "../offsets/b2rom.ts";
+import { canLearn, HM_MOVES, machineLabel, machineSlot } from "../offsets/b2rom.ts";
+import { isWeakStatus } from "./moves.ts";
 
 const gen = Generations.get(GAME.gen);
 const data = (f: string) => new URL(`../../data/${f}`, import.meta.url);
@@ -30,7 +31,7 @@ const BOOSTERS: Record<string, string> = {
   "Rose Incense": "Grass", "Sea Incense": "Water", "Wave Incense": "Water", "Odd Incense": "Psychic", "Rock Incense": "Rock",
 };
 // Held items that are already a good choice (never suggest swapping them out for a booster).
-const KEEP = new Set(["Eviolite", "Exp. Share", "Lucky Egg", "Amulet Coin", "Choice Band", "Choice Specs", "Choice Scarf", "Focus Sash", "Black Sludge"]);
+const KEEP = new Set(["Adamant Orb", "Lustrous Orb", "Griseous Orb", "Light Ball", "Thick Club", "Leek", "Stick", "Eviolite", "Exp. Share", "Lucky Egg", "Amulet Coin", "Choice Band", "Choice Specs", "Choice Scarf", "Focus Sash", "Black Sludge"]);
 // General-purpose held items worth equipping, best first.
 const GOOD_HELD = ["Leftovers", "Life Orb", "Expert Belt", "Shell Bell", "Sitrus Berry", "Muscle Band", "Wise Glasses", "Scope Lens", "Quick Claw", "Oran Berry"];
 const CANDY_EXP: Record<string, number> = { "Exp. Candy XS": 100, "Exp. Candy S": 800, "Exp. Candy M": 3000, "Exp. Candy L": 10000, "Exp. Candy XL": 30000 };
@@ -45,17 +46,8 @@ const moveFromSlug = (slug: string) => {
   return [...gen.moves].find((m) => m.id === id)?.name ?? null;
 };
 
-/** Effective attacking power of a move for this Pokémon: BP × STAB × (its matching attack stat / the other). */
-function power(mon: Mon, move: string) {
-  const mv = new Move(gen, move);
-  if (mv.category === "Status" || !mv.bp) return 0;
-  const p = toCalc(mon);
-  const stab = p.types.includes(mv.type) ? 1.5 : 1;
-  // Multi-hit moves (Fury Swipes, Double Kick…): average number of hits.
-  const hits = Array.isArray(mv.hits) ? 3.1 : typeof mv.hits === "number" && mv.hits > 1 ? mv.hits : 1;
-  const stat = mv.category === "Physical" ? p.stats.atk : p.stats.spa;
-  return mv.bp * hits * stab * (stat / Math.max(p.stats.atk, p.stats.spa));
-}
+/** Effective attacking power of a move for this Pokémon (ability included): see movePower in calc.ts. */
+export const power = movePower;
 
 /** Black 2: TM/HM moves read from RAM and compatibility from the ROM (both randomized). */
 export interface B2Machines { moves: number[]; compat: Buffer[] | null }
@@ -154,8 +146,14 @@ export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], targe
         continue;
       }
       // Variable-power moves (Endeavor, Seismic Toss…) have no fixed BP: don't treat them as "weak".
-      const scored = current.map((c) => ({ c, p: power(m, c), variable: new Move(gen, c).category !== "Status" && !new Move(gen, c).bp }));
-      // Replace the weakest ATTACK: status moves (Hypnosis, Leer…) score 0 power but aren't dead weight.
+      const scored = current.filter((c) => !HM_MOVES.has(c)).map((c) => ({ c, p: power(m, c), variable: new Move(gen, c).category !== "Status" && !new Move(gen, c).bp }));
+      // A weak status move (Growl, Teleport…) is the first to go: any real attack is an upgrade over it.
+      const weakStatus = current.find((c) => isWeakStatus(c) && !HM_MOVES.has(c));
+      if (weakStatus) {
+        cands.push({ tm: label, move, mon: speciesName(m.species), gain: 5 + power(m, move) / 100, replaces: weakStatus, why: `replaces a weak status move with a ${mv.type} attack` });
+        continue;
+      }
+      // Otherwise replace the weakest ATTACK: strong status moves (Hypnosis, Swords Dance…) stay.
       const attacks = scored.filter((x) => !x.variable && x.p > 0);
       const weakest = (attacks.length ? attacks : scored.filter((x) => !x.variable)).sort((a, b) => a.p - b.p)[0];
       const types = new Set(current.map((c) => new Move(gen, c)).filter((x) => x.category !== "Status").map((x) => x.type));

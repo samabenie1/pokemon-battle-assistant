@@ -19,7 +19,11 @@ export const B2 = {
   battler: {
     pkm: 0x00,       // pointer to the encrypted PK5 of this battler
     illusion: 0x04,  // pointer to the disguised PK5 if Illusion is active
-    maxHP: 0x0e, curHP: 0x10, level: 0x18, status: 0x20,
+    maxHP: 0x0e, curHP: 0x10, level: 0x18,
+    // Live conditions: u32 per condition, low 3 bits = kind (0 = none, 1 = permanent, 2 = turn-limited, turns in
+    // the bits above). Verified 10-01: +0x20 paralysis (Dragon Breath), +0x24 sleep (Hypnosis → 0x1a).
+    // Freeze/burn/poison follow the Gen 5 order (unverified).
+    status: 0x20, // paralysis, sleep, freeze, burn, poison
     stats: 0xee,     // u16 × 5: Atk Def SpA SpD Spe
     statStages: 0xfc, // u8 × 7: Atk Def SpA SpD Spe Acc Eva (6 = neutral)
     moves: 0x104,    // 4 × 14 bytes: u16 move id, u8 current PP

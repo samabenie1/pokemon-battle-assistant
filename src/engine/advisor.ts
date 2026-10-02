@@ -57,7 +57,26 @@ Confusion: me.confused / enemy.confused. A confused Pokémon hits itself instead
 
 Status rules: if me.status is "slp" (asleep) or "frz" (frozen), my active Pokémon almost certainly CAN'T attack this turn,
 so a move recommendation is wasted unless it wakes up. Prefer curing (cureOption) or switching. Paralysis ("par") halves
-speed and gives a 25% chance to lose the turn.
+speed and gives a 25% chance to lose the turn. If enemy.status is set, the enemy ALREADY has a status: never recommend a
+status move (Hypnosis, Thunder Wave, Toxic, Will-O-Wisp…) on it, because it fails. A sleeping/frozen enemy can't attack,
+so attack it freely.
+
+Transform / Imposter: an enemy named "X (as Y)" has transformed into my Pokémon Y: same types, stats, ability and moves
+(5 PP each), its own HP. "X (will Transform into Y)" knows Transform and will copy whoever is in front. The damage
+numbers already model the copy, so trust enemyMoves; it is NOT harmless.
+
+weather (when set): Sun / Rain / Sand / Hail is up; all damage numbers already include it (sun: Fire ×1.5, Water ×0.5;
+rain: the reverse). A switch-in with a weather ability (Drought, Drizzle…) changes it on entry; its switches[] numbers
+already use its weather.
+
+enemyBide (when set): the enemy used Bide. It takes hits for 2 turns, then (at +1 priority) deals DOUBLE the damage it
+took to whoever is in front; Ghost types are immune. myMoves[].bideBackfire = true means that attack would make the release
+KO me: never pick it. Prefer a move without bideBackfire, a status move, or a switch (switches[].takesWorst already
+includes the release). If the enemy knows Bide but enemyBide is null, it hasn't used it yet.
+
+switches[].overLeveled = true: that Pokémon is several levels ahead of the team. It is still a normal option, but when
+a lower-level Pokémon also safely wins, pick the lower-level one so the EXP spreads; use the high one when it's the
+only safe choice. Safety always comes first.
 
 Switching costs your turn and the switch-in takes a hit, so only switch to a Pokémon that WINS the matchup
 (switches[].matchup.wins). Never recommend switching back and forth; if nobody wins, attack with the best move.

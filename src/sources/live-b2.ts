@@ -10,9 +10,9 @@
 // - The enemy's own PK5 party copy (+0x53B70) keeps its battle-start HP, so live HP always comes from battlers.
 // - Bag (PKHeX SAV5 pouch layout): items pouch at +0x18D20 (310 × u16 id, u16 count), medicine at +0x194F8 (48).
 import { MelonDS } from "../reader/melonds.ts";
-import { speciesName } from "../names.ts";
+import { moveName, speciesName } from "../names.ts";
 import { B2 } from "../offsets/b2.ts";
-import { readPersonal } from "../offsets/b2rom.ts";
+import { readPersonal, setHMMoves } from "../offsets/b2rom.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { decrypt, parse, SIZE_PARTY } from "../pk5.ts";
@@ -32,6 +32,7 @@ export class B2Reader {
   private ds = new MelonDS();
   private base = 0;
   private lastPP = new Map<number, number[]>(); // by PID
+  private lastFoePP = new Map<number, number[]>();
   private participants = new Set<number>();
   private sig = "";
   private counter = 0;
@@ -78,7 +79,11 @@ export class B2Reader {
     const boosts: Boosts | undefined = [...st].every((x) => x <= 12)
       ? { atk: st[0] - 6, def: st[1] - 6, spa: st[2] - 6, spd: st[3] - 6, spe: st[4] - 6, accuracy: st[5] - 6, evasion: st[6] - 6 }
       : undefined;
-    return { ...m, hp, maxHP, moves: moves.some(Boolean) ? moves : m.moves, pp: moves.some(Boolean) ? pp : m.pp, boosts };
+    // The PK5 copy's status isn't updated mid-battle; rebuild it (PK5 bit layout) from the live condition slots.
+    const cond = [0, 1, 2, 3, 4].map((i) => this.ds.u32(b + bt.status + i * 4));
+    const [par, slp, frz, brn, psn] = cond.map((c) => (c & 7) !== 0);
+    const status = slp ? Math.min(7, Math.max(1, cond[1] >>> 3)) : psn ? 0x08 : brn ? 0x10 : frz ? 0x20 : par ? 0x40 : 0;
+    return { ...m, status, hp, maxHP, moves: moves.some(Boolean) ? moves : m.moves, pp: moves.some(Boolean) ? pp : m.pp, boosts };
   }
 
   private side(offset: number): BattleMon[] {
@@ -93,7 +98,7 @@ export class B2Reader {
     return out;
   }
 
-  /** Diagnostic: raw battler +0x20 (live status, layout not mapped yet) vs the PK5 status for both actives. */
+  /** Diagnostic: raw battler condition slots (+0x20: par slp frz brn psn …) vs the PK5 status for both actives. */
   debugStatus() {
     const out: string[] = [];
     for (const [side, off] of [["me", 0], ["foe", B2.enemyBattlerOffset]] as const) {
@@ -136,7 +141,7 @@ export class B2Reader {
       foeFieldEC: null, double: false, myActives: [], foeActives: [], battleParty: [], used: [], trainer: false,
     };
     if (!inBattle) {
-      if (this.inBattle) { this.participants.clear(); this.lastPP.clear(); }
+      if (this.inBattle) { this.participants.clear(); this.lastPP.clear(); this.lastFoePP.clear(); }
       this.inBattle = false;
       return empty;
     }
@@ -163,9 +168,17 @@ export class B2Reader {
       this.lastPP.set(m.ec, [...m.pp]);
     }
 
+    // Moves the foe just used (PP drops), e.g. Bide, which the damage calc can't see coming.
+    const foeUsed: number[] = [];
+    for (const m of foes.slice(0, nActive)) {
+      const prev = this.lastFoePP.get(m.ec);
+      if (prev) m.pp.forEach((p, i) => { if (m.moves[i] && p < prev[i]) foeUsed.push(m.moves[i]); });
+      this.lastFoePP.set(m.ec, [...m.pp]);
+    }
+
     // No battle step counter is known for Gen 5: "counter" changes whenever the visible battle state does,
     // so the server waits until it's been still for a moment (the game waiting for input) before advising.
-    const sig = [...mine, ...foes].map((m) => `${m.ec}:${m.hp}:${m.pp.join(",")}:${Object.values(m.boosts ?? {}).join(",")}`).join("|");
+    const sig = [...mine, ...foes].map((m) => `${m.ec}:${m.hp}:${m.status}:${m.pp.join(",")}:${Object.values(m.boosts ?? {}).join(",")}`).join("|");
     if (sig !== this.sig) { this.sig = sig; this.counter = (this.counter + 1) & 0xff || 1; }
 
     return {
@@ -175,7 +188,7 @@ export class B2Reader {
       enemyTeam: foes as (Mon & { maxHP: number })[],
       foeFieldEC: foes[0].ec,
       double, myActives: double ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: double ? [foes[0].ec, foes[1].ec] : [foes[0].ec],
-      battleParty: mine, used,
+      battleParty: mine, used, foeUsed,
       trainer: this.ds.u16(this.base + B2.enemyTrainerID) !== 0,
       trainerId: this.ds.u16(this.base + B2.enemyTrainerID),
     };
@@ -207,6 +220,7 @@ export class B2Reader {
     const at = ram.indexOf(TM_TABLE_PREFIX);
     if (at < 0) return null;
     const moves = Array.from({ length: 101 }, (_, i) => ram.readUInt16LE(at + 4 + i * 2));
+    setHMMoves(moves.slice(92, 98).map(moveName));
     let compat: Buffer[] | null = null, catchRate: number[] | null = null;
     // The ROM path: PBA_ROM, else melonDS's command line, else the newest entry in its Recent ROMs list.
     const recent = () => { try {
@@ -219,6 +233,31 @@ export class B2Reader {
     this.tmCache = { pid: this.ds.pid, moves, compat, catchRate };
     return this.tmCache;
   }
+  /** Money (save Trainer2 block: u32 money, then the badge byte). */
+  money() { return this.connected() ? this.ds.u32(this.base + 0x21a20) : 0; }
+  /** The shop's buy list while a Poké Mart menu is open, else null. In RAM it's 8-byte records
+   *  {u16 item, u16 0, u16 price, u16 0} (found 10-01 at 0x24b628; this shop's stock is randomized in Sam's ROM).
+   *  Found by shape: 4-40 such records in a row, distinct items, prices multiples of 10. */
+  shop(): { id: number; price: number }[] | null {
+    if (!this.connected()) return null;
+    const ram = this.ds.bytes(0, 0x400000);
+    const ok = (o: number) => {
+      if (o < 0) return false;
+      const it = ram.readUInt16LE(o), pr = ram.readUInt16LE(o + 4);
+      return it > 0 && it < 640 && ram.readUInt16LE(o + 2) === 0 && ram.readUInt16LE(o + 6) === 0 && pr <= 50000 && pr % 10 === 0;
+    };
+    for (let o = 0; o < ram.length - 64; o += 4) {
+      if (!ok(o) || ok(o - 8)) continue;
+      let n = 0;
+      while (ok(o + n * 8)) n++;
+      if (n < 4 || n > 40) continue;
+      const list = Array.from({ length: n }, (_, i) => ({ id: ram.readUInt16LE(o + i * 8), price: ram.readUInt16LE(o + i * 8 + 4) }));
+      if (new Set(list.map((x) => x.id)).size === n && list.some((x) => x.price >= 100)) return list;
+    }
+    return null;
+  }
+  /** Number of gym badges (one bit each). */
+  badges() { return this.connected() ? [...Array(8).keys()].filter((i) => this.ds.u8(this.base + B2.badges) >> i & 1).length : 0; }
   /** Species whose (randomized) ability the player knows: the current party. PC boxes aren't read yet. */
   ownedSpecies() {
     return new Set(this.connected() ? this.party().map((m) => m.species) : []);
