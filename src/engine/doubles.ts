@@ -12,16 +12,19 @@ export interface DoubleState {
   mine: (Mon & { maxHP?: number })[];   // my actives (1-2)
   foes: (Mon & { maxHP?: number })[];   // opponent actives (1-2)
   bench: Mon[];
+  /** Partner battle: the AI ally's Pokémon next to mine (the player doesn't control it). */
+  ally?: (Mon & { maxHP?: number }) | null;
   abilityKnown: (species: number) => boolean;
 }
 
 export function analyzeDouble(s: DoubleState, nuzlocke: boolean) {
   const foes = s.foes.map((f) => toCalc(f, undefined, !s.abilityKnown(f.species), true));
   const mine = s.mine.map((m) => toCalc(m, undefined, false, true));
+  const allyCalc = s.ally ? toCalc(s.ally, undefined, false, true) : undefined;
 
   const actives = s.mine.map((mon, i) => {
     const me = mine[i];
-    const ally = mine[1 - i];
+    const ally = mine[1 - i] ?? allyCalc;
     const moves = usableMoves(mon).map((id) => {
       const name = moveName(id);
       const mv = new Move(gen, name);
@@ -96,7 +99,9 @@ export function analyzeDouble(s: DoubleState, nuzlocke: boolean) {
     return { pokemon: a.name, move: best?.move ?? "–", target: best?.target ?? "–" };
   });
 
-  return { double: true as const, actives, foes: foeInfo, picks, danger, switchIns, bench: benchMons.map((m) => speciesName(m.species)) };
+  const allyInfo = s.ally && allyCalc ? { name: `${speciesName(s.ally.species)} (ally)`, level: s.ally.level, types: allyCalc.types,
+    hp: allyCalc.curHP(), maxHP: allyCalc.maxHP() } : null;
+  return { double: true as const, actives, ally: allyInfo, foes: foeInfo, picks, danger, switchIns, bench: benchMons.map((m) => speciesName(m.species)) };
 }
 
 /** Overrule AI advice that breaks the hard rules: hurting the partner, or leaving an endangered Pokémon in when a safe switch exists. */

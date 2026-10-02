@@ -28,6 +28,9 @@ const TM_POUCH = 0x19344, TM_SLOTS = 109; // verified 10-01 (TMs + HMs, item ids
 const TM_TABLE_PREFIX = Buffer.from("87038803", "hex");
 const BALL_IDS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 492, 493, 494, 495, 496, 497, 498, 499, 576]);
 
+/** Bytes between battle clients in the battler pointer table (7 slots × 4). */
+const CLIENT_STRIDE = 0x1c;
+
 export class B2Reader {
   private ds = new MelonDS();
   private base = 0;
@@ -151,11 +154,20 @@ export class B2Reader {
     const foes = this.side(B2.enemyBattlerOffset);
     if (!mine.length || !foes.length) return { ...empty, inBattle: true }; // battle still setting up
 
+    // Partner (multi) battles: the battler table is 4 clients × 7 slots (6 Pokémon + a count): client 0 = me,
+    // 1 = foe trainer 1, 2 = my AI ally, 3 = foe trainer 2 (mapped 10-02 from a live ally battle). Each client has
+    // ONE Pokémon on the field (its first slot), so I control only mine[0].
+    const ally = this.side(2 * CLIENT_STRIDE).filter((m) => m.tid !== mine[0].tid || m.ot !== mine[0].ot);
+    const foes2 = this.side(3 * CLIENT_STRIDE);
+    const multi = ally.length > 0 || foes2.length > 0;
+    if (multi) { foes.push(...foes2.filter((m) => !foes.some((f) => f.ec === m.ec))); }
+    const allyActive = ally[0] && ally[0].hp > 0 ? ally[0] : null;
     // Doubles: the first two battlers of each side are on the field. Triple/rotation battles are
     // read as doubles (the first two), which is the best the engine supports.
     const flag = this.ds.u8(this.base + B2.doubleTripleFlag);
-    const nActive = flag === 0 ? 1 : 2;
-    const double = nActive === 2 && mine.length >= 2 && foes.length >= 2;
+    const nActive = multi ? 1 : flag === 0 ? 1 : 2;
+    const foeField = multi ? [foes[0], foes2[0]].filter((m): m is BattleMon => !!m) : foes.slice(0, nActive);
+    const double = multi || (nActive === 2 && mine.length >= 2 && foes.length >= 2);
     const me = mine[0];
     this.participants.add(me.ec);
     if (double) this.participants.add(mine[1].ec);
@@ -170,7 +182,7 @@ export class B2Reader {
 
     // Moves the foe just used (PP drops), e.g. Bide, which the damage calc can't see coming.
     const foeUsed: number[] = [];
-    for (const m of foes.slice(0, nActive)) {
+    for (const m of foeField) {
       const prev = this.lastFoePP.get(m.ec);
       if (prev) m.pp.forEach((p, i) => { if (m.moves[i] && p < prev[i]) foeUsed.push(m.moves[i]); });
       this.lastFoePP.set(m.ec, [...m.pp]);
@@ -187,7 +199,7 @@ export class B2Reader {
       activeEC: me.ec, participants: new Set(this.participants),
       enemyTeam: foes as (Mon & { maxHP: number })[],
       foeFieldEC: foes[0].ec,
-      double, myActives: double ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: double ? [foes[0].ec, foes[1].ec] : [foes[0].ec],
+      double, myActives: double && !multi ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: foeField.map((m) => m.ec), allyActive,
       battleParty: mine, used, foeUsed,
       trainer: this.ds.u16(this.base + B2.enemyTrainerID) !== 0,
       trainerId: this.ds.u16(this.base + B2.enemyTrainerID),

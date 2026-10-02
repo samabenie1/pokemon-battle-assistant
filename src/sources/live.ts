@@ -80,6 +80,8 @@ export interface LiveSnapshot {
   double: boolean;
   myActives: number[];   // ECs
   foeActives: number[];  // ECs
+  /** Partner (multi) battles, Black 2: the AI ally's Pokémon on the field (not controlled by the player). */
+  allyActive?: BattleMon | null;
   /** In-battle party in party order, with live HP from the status records. */
   battleParty: BattleMon[];
   /** Moves whose PP dropped since the previous poll: [species, moveId]. */

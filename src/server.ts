@@ -298,7 +298,7 @@ function poll() {
     const mine = s.myActives.map((ec) => byEC(s.battleParty, ec)).filter((m): m is Mon => !!m && m.hp > 0);
     const foes = s.foeActives.map((ec) => byEC(s.enemyTeam, ec)).filter((m): m is Mon => !!m && m.hp > 0);
     if (!mine.length || !foes.length) return;
-    const key = `D:${mine.map((m) => `${m.ec}:${m.hp}:${m.status}`).join(",")}|${foes.map((m) => `${m.ec}:${m.hp}:${m.status}`).join(",")}`;
+    const key = `D:${mine.map((m) => `${m.ec}:${m.hp}:${m.status}`).join(",")}|A:${s.allyActive ? `${s.allyActive.ec}:${s.allyActive.hp}` : ""}|${foes.map((m) => `${m.ec}:${m.hp}:${m.status}`).join(",")}`;
     const now = Date.now();
     if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; }
     if (key === lastKey || now - stableSince < 800) return;
@@ -307,7 +307,7 @@ function poll() {
     // Log every battler slot once per battle so the ally's location can be found.
     const dumpKey = s.enemyTeam.map((m) => m.ec).join(",");
     if (b2Reader && dumpKey !== battlerDumpKey) { battlerDumpKey = dumpKey; console.log(`[battlers] ${b2Reader.debugBattlers().join(" | ")}`); }
-    const d = analyzeDouble({ mine, foes, bench: s.battleParty.filter((m) => !s.myActives.includes(m.ec)), abilityKnown }, NUZLOCKE);
+    const d = analyzeDouble({ mine, foes, ally: s.allyActive ?? null, bench: s.battleParty.filter((m) => !s.myActives.includes(m.ec)), abilityKnown }, NUZLOCKE);
     const seq = ++adviceSeq;
     // A lone wild foe (the other one fainted or was caught): show catch odds, and which of my moves could KO it.
     // Wild double battles in B2 only happen in dark grass: ×0.3 catch rate with ≤30 species caught (assumed).
@@ -323,7 +323,7 @@ function poll() {
     }
     latest = { status: "battle", doubles: d, nuzlocke: NUZLOCKE, catch: catchMode?.odds, catchKO: catchMode?.koMoves, at: now };
     push();
-    console.log(`[doubles] ${d.actives.map((a) => `${a.name} ${a.hp}/${a.maxHP}`).join(" + ")} vs ${d.foes.map((f) => `${f.name} ${f.hp}/${f.maxHP}`).join(" + ")}`);
+    console.log(`[doubles] ${d.actives.map((a) => `${a.name} ${a.hp}/${a.maxHP}`).join(" + ")}${d.ally ? ` + ${d.ally.name} ${d.ally.hp}/${d.ally.maxHP}` : ""} vs ${d.foes.map((f) => `${f.name} ${f.hp}/${f.maxHP}`).join(" + ")}`);
     const foeOT = s.enemyTeam[0]?.ot ?? "";
     adviseDouble(catchMode ? { ...d, catchMode: { foe: catchMode.foe, bestBall: catchMode.odds.odds[0], movesThatCouldKO: catchMode.koMoves } } : d, DYNAMAX_TRAINERS.has(foeOT) && BOSS_MODEL ? BOSS_MODEL : undefined).then((adv) => {
       if (seq !== adviceSeq) return;

@@ -97,7 +97,7 @@ function renderDoubles(d) {
   for (const el of document.querySelectorAll(".versus, #moves, #meta, #catchPanel, #trainPanel")) el.closest(".panel, .versus, .meta").style.display = "none";
   const adv = d.doubleAdvice;
   const hpBar = (hp, max) => { const p = Math.round(100 * hp / max); return `<div class="hpbar"><div style="width:${p}%;background:${hpColor(p)}"></div></div><div class="meta">${hp}/${max} HP (${p}%)</div>`; };
-  const header = `<div class="label">DOUBLE BATTLE · ${D.actives.map((x) => esc(x.name)).join(" + ")} vs ${D.foes.map((f) => esc(f.name)).join(" + ")}</div>`;
+  const header = `<div class="label">${D.ally ? "PARTNER BATTLE" : "DOUBLE BATTLE"} · ${D.actives.map((x) => esc(x.name)).join(" + ")}${D.ally ? ` (+ ${esc(D.ally.name)})` : ""} vs ${D.foes.map((f) => esc(f.name)).join(" + ")}</div>`;
   const recs = adv
     ? adv.actions.map((x) => `<div style="font-size:28px;font-weight:800;margin-top:6px">${esc(x.pokemon)}: ${esc(x.choice)} <span style="font-weight:400;color:var(--muted)">→ ${esc(x.target)}</span></div>`).join("") +
       `<div class="reason" style="margin-top:6px">${esc(adv.reason)}</div><div class="meta">${adv.model === "calculator" ? "calculator pick" : `${esc(adv.model)}, ${(adv.ms / 1000).toFixed(1)}s`}</div>`
@@ -110,7 +110,8 @@ function renderDoubles(d) {
     x.moves.map((m) => `<tr><td>${badge(m.type)} <b>${esc(m.move)}</b>${m.spread ? ` <span class="meta">(hits both)</span>` : ""}${m.hitsAlly ? ` <span style="color:var(--warn)">⚠ hits partner ${m.hitsAlly.pctMax[1]}%</span>` : ""}</td>` +
       m.vs.map((v) => `<td>${m.category === "Status" ? "<span class='meta'>status</span>" : `${v.pctMax[0]}–${v.pctMax[1]}%${v.ko ? " <b style='color:var(--good)'>KO</b>" : ""}`}</td>`).join("") + `<td>${m.pp ?? ""}</td></tr>`).join("") +
     `</table><div class="meta" style="margin-top:6px">Threats: ${x.threats.map((t) => `${esc(t.from)}'s ${esc(t.move ?? "–")} ${t.pctMax[1]}%${t.faster ? " (faster)" : ""}`).join(" · ")}</div></div>`).join("");
-  const foes = `<div class="panel" style="margin-top:12px"><h3>Opponents</h3>${D.foes.map((f) => `<div style="margin-bottom:8px"><b>${esc(f.name)}</b> Lv ${f.level} ${f.types.map(badge).join("")} <span class="meta">ability ${esc(f.ability)} · speed ${f.speed}</span>${hpBar(f.hp, f.maxHP)}</div>`).join("")}</div>`;
+  const allyBox = D.ally ? `<div class="panel" style="margin-top:12px"><h3>Your ally (AI, not controlled)</h3><b>${esc(D.ally.name)}</b> Lv ${D.ally.level} ${D.ally.types.map(badge).join("")}${hpBar(D.ally.hp, D.ally.maxHP)}</div>` : "";
+  const foes = allyBox + `<div class="panel" style="margin-top:12px"><h3>Opponents</h3>${D.foes.map((f) => `<div style="margin-bottom:8px"><b>${esc(f.name)}</b> Lv ${f.level} ${f.types.map(badge).join("")} <span class="meta">ability ${esc(f.ability)} · speed ${f.speed}</span>${hpBar(f.hp, f.maxHP)}</div>`).join("")}</div>`;
   const pctC = (x) => x >= 0.995 ? "100%" : `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
   const catchBox = d.catch && d.catch.odds.length ? `<div class="panel" style="margin-top:12px"><h3>Catching ${esc(D.foes[0].name)}? (per throw)</h3>
     <div style="font-size:24px;font-weight:800">${esc(d.catch.odds[0].ball)} · ${pctC(d.catch.odds[0].chance)}</div>

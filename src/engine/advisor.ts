@@ -160,6 +160,8 @@ The player's save is randomized: abilities and movesets are unusual, but types a
 You get damage-calculator output as JSON. actives[] = my two Pokémon; for each: moves[] with damage % vs each foe
 (vs[].pctMax, vs[].ko = KOs this turn), spread = hits both foes (already reduced for doubles), hitsAlly = also hits my
 partner (e.g. Earthquake, Surf); threats[] = each foe's best move vs it; koRisk.single / koRisk.focused (both foes on it).
+ally (when present): a PARTNER battle. The player controls ONLY actives[] (one Pokémon); ally is an AI trainer's
+Pokémon next to it. Give an action only for actives[]; never for the ally. hitsAlly then means damage to that ally.
 picks[] is a calculator suggestion. ${process.env.PBA_NUZLOCKE === "1" ? "This is a NUZLOCKE: a faint is permanent. Safety first, then winning, then EXP." : ""}
 Choose one action per active Pokémon: a move and its target (a foe's name, "both foes" for spread moves), or "switch to X".
 Prefer KOing the biggest threat first; focus both attacks on one foe if that KOs it.
