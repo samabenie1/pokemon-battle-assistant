@@ -174,8 +174,8 @@ function render(d) {
     `<div class="meta">Still to come: ${a.enemyBench.map((m) => `${esc(m.name)} Lv ${m.level}`).join(", ")}</div>`);
   const rec = document.getElementById("rec");
   if (d.advice) {
-    rec.innerHTML = `<div class="label">${a.between ? `NEXT UP: ${esc(a.enemy.name)}${a.enemy.dynamax ? " (expect Dynamax)" : ""} · ` : ""}${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.action === "item" ? "USE ITEM" : d.advice.action === "run" ? "RUN AWAY" : "USE"}</div>
-      <div class="choice">${esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
+    rec.innerHTML = `<div class="label">${a.between ? `NEXT UP: ${esc(a.enemy.name)}${a.enemy.dynamax ? " (expect Dynamax)" : ""} · ` : ""}${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.choice === "Stay" ? "DON'T SWITCH" : d.advice.action === "item" ? "USE ITEM" : d.advice.action === "run" ? "RUN AWAY" : "USE"}</div>
+      <div class="choice">${d.advice.choice === "Stay" ? `Stay in with ${esc(a.me.name.split(" (")[0])}` : esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
       <div class="alt">Alternative: ${esc(d.advice.alternative)}</div>
       ${d.advice.rejected ? `<div class="meta" style="margin-top:8px">✋ ${esc(d.advice.rejected)}</div>` : ""}`;
   } else if (d.error) {
