@@ -173,6 +173,9 @@ function matchup(mine: Hit | undefined, theirs: Hit | undefined, myHP: number, t
   return { myHits, theirHits, wins, margin: theirHits - myHits + (faster ? 0.5 : 0) - (switchingIn ? 1 : 0) };
 }
 
+/** Abilities that cancel recoil damage. */
+const NO_RECOIL = new Set(["Rock Head", "Magic Guard"]);
+
 /** Drop over-leveled Pokémon from a candidate list unless they're the only candidates. */
 export const preferNotAhead = <T extends { overLeveled?: boolean }>(list: T[]) =>
   list.some((x) => !x.overLeveled) ? list.filter((x) => !x.overLeveled) : list;
@@ -203,7 +206,12 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const myMoves = s.me.active.moves.filter(Boolean).map((m, i) => {
     const h = scaleHit(hit(me, enemy, moveName(m)));
     const dealt = Math.min(enemy.curHP(), (h.pctMax[1] / 100) * enemy.maxHP());
-    return { ...h, pp: s.me.active.pp[i], ...(opts.bide && h.category !== "Status" ? { bideBackfire: releaseHP + 2 * dealt >= me.curHP() } : {}) };
+    // Recoil (Flare Blitz, Brave Bird, Double-Edge…): the user loses a share of the damage dealt (worst case = max
+    // roll). It cost Sam WINGS on 10-02: "survives the foe's best hit" ignored Flare Blitz's own recoil.
+    const rc = (new Move(gen, moveName(m)) as { recoil?: [number, number] }).recoil;
+    const recoilHP = rc && !NO_RECOIL.has(me.ability ?? "") ? Math.floor((dealt * rc[0]) / rc[1]) : 0;
+    return { ...h, pp: s.me.active.pp[i], ...(recoilHP ? { recoilHP, recoilKO: recoilHP >= me.curHP(), recoilRisk: false as boolean } : {}),
+      ...(opts.bide && h.category !== "Status" ? { bideBackfire: releaseHP + 2 * dealt >= me.curHP() } : {}) };
   }).sort((a, b) => b.pctMax[1] - a.pctMax[1]);
   const enemyMoves = usableMoves(enemyMon).map((m) => ({ ...hit(enemy, me, moveName(m)), pp: enemyMon.pp[enemyMon.moves.indexOf(m)] }))
     .sort((a, b) => b.pctMax[1] - a.pctMax[1]);
@@ -262,6 +270,11 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const bideKOs = !!opts.bide && releaseHP >= me.curHP();
   const koRisk = bideKOs ? { move: "Bide (release)", maxRoll: true, withCrit: true }
     : { move: enemyMoves[0]?.move ?? null, maxRoll: worstMax >= myPct, withCrit: worstMax * 1.5 >= myPct };
+  // recoilRisk: this move's recoil plus the foe's best hit (×1.5 for a crit) can KO me. A KO before the foe moves
+  // only leaves the recoil itself (recoilKO).
+  const worstHP = (worstMax / 100) * me.maxHP();
+  for (const mv of myMoves)
+    if (mv.recoilHP) mv.recoilRisk = mv.recoilKO || mv.recoilHP + worstHP * 1.5 >= me.curHP();
 
   // Only suggest a swap when it clearly beats staying in.
   // Safety first: the winning switch-in that takes the least damage; level only breaks near-ties (training mode).

@@ -17,7 +17,7 @@ function switchKills(a: Analysis, name: string, nuzlocke: boolean) {
 /** A KO this turn that lands before the enemy moves. */
 function sureKO(a: Analysis) {
   const first = a.iMoveFirst === true;
-  return a.myMoves.find((m) => first && m.category !== "Status" && m.ofCurrent[0] >= a.enemy.hp && !m.bideBackfire);
+  return a.myMoves.find((m) => first && m.category !== "Status" && m.ofCurrent[0] >= a.enemy.hp && !m.bideBackfire && !m.recoilKO);
 }
 
 const HEALING = new Set(["Pain Split", "Recover", "Roost", "Synthesis", "Moonlight", "Morning Sun", "Rest", "Slack Off",
@@ -72,7 +72,8 @@ export function fallbackAdvice(a: Analysis, nuzlocke: boolean): Advice {
     if (pick) return { ...base, action: "move", choice: pick.move, alternative: "–",
       reason: `${a.enemy.name} is storing damage with Bide (${a.enemyBide.storedHP} HP so far, comes back doubled). ${ok ? `${ok.move} is safe: you survive the doubled release.` : `Any attack would make the release KO you, so use ${status!.move}.`}` };
   }
-  const best = a.myMoves[0];
+  // Strongest attack whose recoil can't get me KO'd; a recoil move only if nothing else does damage.
+  const best = a.myMoves.find((m) => m.category !== "Status" && !m.recoilRisk) ?? a.myMoves.find((m) => !m.recoilKO) ?? a.myMoves[0];
   return { ...base, action: "move", choice: best?.move ?? "–",
     reason: danger ? `No safe switch exists, so hit as hard as possible: ${best?.move} does ${best?.pctMax.join("–")}%.`
       : `${a.me.name} survives ${a.enemy.name}'s best hit${nuzlocke ? " even with a crit" : ""}, so attack: ${best?.move} does ${best?.pctMax.join("–")}%.`,
@@ -114,6 +115,10 @@ export function checkAdvice(adv: Advice, a: Analysis, nuzlocke: boolean): string
     if (!mv) return `${adv.choice} isn't one of ${a.me.name}'s moves.`;
     if (mv.bideBackfire)
       return `${a.enemy.name} is using Bide: ${adv.choice}'s damage comes back doubled and the release would KO ${a.me.name}.`;
+    if (mv.recoilKO)
+      return `${adv.choice}'s recoil (up to ${mv.recoilHP} HP) would KO ${a.me.name} by itself.`;
+    if (mv.recoilRisk && !(a.iMoveFirst === true && mv.ofCurrent[0] >= a.enemy.hp))
+      return `${adv.choice} has recoil (up to ${mv.recoilHP} HP): with ${a.enemy.name}'s ${a.koRisk.move ?? "best hit"} on top, ${a.me.name} can faint. Use a move without recoil or switch.`;
     if (a.enemy.status && STATUS_MOVES.has(adv.choice))
       return `${a.enemy.name} already has a status (${a.enemy.status}), so ${adv.choice} would fail. Attack instead.`;
     const winningSwitch = a.switches.some((s) => s.matchup.wins && !switchKills(a, s.name, false));

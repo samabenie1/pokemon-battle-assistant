@@ -74,6 +74,10 @@ took to whoever is in front; Ghost types are immune. myMoves[].bideBackfire = tr
 KO me: never pick it. Prefer a move without bideBackfire, a status move, or a switch (switches[].takesWorst already
 includes the release). If the enemy knows Bide but enemyBide is null, it hasn't used it yet.
 
+myMoves[].recoilHP: HP this move costs ME (Flare Blitz, Brave Bird, Double-Edge… worst case). recoilRisk = true:
+recoil plus the enemy's best hit (with a crit) can KO me, so don't use it unless it KOs before the enemy moves;
+recoilKO = true: the recoil alone KOs me, never use it. Prefer a recoil-free attack when the damage is close.
+
 switches[].overLeveled = true: that Pokémon is several levels ahead of the team. It is still a normal option, but when
 a lower-level Pokémon also safely wins, pick the lower-level one so the EXP spreads; use the high one when it's the
 only safe choice. Safety always comes first.
