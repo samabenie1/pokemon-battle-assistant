@@ -159,6 +159,8 @@ export function effSpeed(p: Pokemon) {
 }
 
 /** Moves a Pokémon can still use (PP left). */
+/** Struggle's move id: what a Pokémon uses with no PP left. */
+const STRUGGLE = 165;
 export const usableMoves = (m: Mon) => m.moves.filter((mv, i) => mv && (m.pp[i] ?? 1) > 0);
 
 const nonzero = (b?: Mon["boosts"]) => (b ? Object.fromEntries(Object.entries(b).filter(([, v]) => v !== 0)) : {});
@@ -210,14 +212,17 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
 
   // Bide: every HP of damage dealt now comes back doubled. bideBackfire = after this hit, the release would KO me.
   const releaseHP = opts.bide ? 2 * opts.bide.storedHP : 0;
-  const myMoves = s.me.active.moves.filter(Boolean).map((m, i) => {
+  // Only moves with PP left (Sam, 10-02: the advice kept picking a 0-PP Fusion Flare). With none left it's Struggle.
+  const myIds = usableMoves(s.me.active).length ? usableMoves(s.me.active) : [STRUGGLE];
+  const myMoves = myIds.map((m) => {
+    const i = s.me.active.moves.indexOf(m);
     const h = scaleHit(hit(me, enemy, moveName(m)));
     const dealt = Math.min(enemy.curHP(), (h.pctMax[1] / 100) * enemy.maxHP());
     // Recoil (Flare Blitz, Brave Bird, Double-Edge…): the user loses a share of the damage dealt (worst case = max
     // roll). It cost Sam WINGS on 10-02: "survives the foe's best hit" ignored Flare Blitz's own recoil.
     const rc = (new Move(gen, moveName(m)) as { recoil?: [number, number] }).recoil;
     const recoilHP = rc && !NO_RECOIL.has(me.ability ?? "") ? Math.floor((dealt * rc[0]) / rc[1]) : 0;
-    return { ...h, pp: s.me.active.pp[i], accuracy: Math.round(hitChance(moveName(m), me.ability)), ...(recoilHP ? { recoilHP, recoilKO: recoilHP >= me.curHP(), recoilRisk: false as boolean } : {}),
+    return { ...h, pp: i >= 0 ? s.me.active.pp[i] : 1, accuracy: Math.round(hitChance(moveName(m), me.ability)), ...(recoilHP ? { recoilHP, recoilKO: recoilHP >= me.curHP(), recoilRisk: false as boolean } : {}),
       ...(opts.bide && h.category !== "Status" ? { bideBackfire: releaseHP + 2 * dealt >= me.curHP() } : {}) };
   }).sort((a, b) => b.pctMax[1] - a.pctMax[1]);
   const enemyMoves = usableMoves(enemyMon).map((m) => ({ ...hit(enemy, me, moveName(m)), pp: enemyMon.pp[enemyMon.moves.indexOf(m)] }))
@@ -255,7 +260,7 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     const worstNow = usableMoves(enemyMon).map((m) => hit(enemy, bp, moveName(m), f)).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const worstBoosted = setupMove ? usableMoves(enemyMon).map((m) => hit(enemyAfterSetup, bp, moveName(m), f)).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0] : undefined;
     const worstIn = worstBoosted && worstBoosted.pctMax[1] > (worstNow?.pctMax[1] ?? 0) ? worstBoosted : worstNow;
-    const bestOut = b.moves.filter(Boolean).map((m) => scaleHit(hit(bp, enemy, moveName(m), f))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
+    const bestOut = (usableMoves(b).length ? usableMoves(b) : [STRUGGLE]).map((m) => scaleHit(hit(bp, enemy, moveName(m), f))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const st = statusOf(b.status);
     const disabled = st === "slp" || st === "frz"; // can't act after switching in
     // Bide's release hits the switch-in (Ghost types are immune).
