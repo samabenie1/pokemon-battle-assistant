@@ -18,7 +18,11 @@ const byNum = (table: Record<string, { num: number; name: string; forme?: string
 };
 
 const species = byNum(json("pokedex.json"));
-const moves = byNum(json("moves.json"));
+const moveTable = json("moves.json") as Record<string, { num: number; name: string; accuracy: number | true }>;
+const moves = byNum(moveTable);
+const accuracyByName = new Map(Object.values(moveTable).map((m) => [m.name, m.accuracy === true ? 100 : m.accuracy]));
+/** Base accuracy in % (100 for moves that never miss). */
+export const moveAccuracy = (name: string) => accuracyByName.get(name) ?? 100;
 const abilities = byNum(js("abilities.js", "BattleAbilities"));
 const items = byNum(js("items.js", "BattleItems"));
 

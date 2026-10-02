@@ -2,7 +2,7 @@
 // speed order and switch-in safety using @smogon/calc (the game's generation rules, see game.ts).
 import { calculate, Generations, Move, Pokemon, Field } from "@smogon/calc";
 import type { StatusName } from "@smogon/calc/dist/data/interface.js";
-import { NATURES, abilityName, itemName, monLabel, moveName, speciesName } from "../names.ts";
+import { NATURES, abilityName, itemName, monLabel, moveAccuracy, moveName, speciesName } from "../names.ts";
 import type { Mon } from "../pk8.ts";
 import { GAME } from "../game.ts";
 
@@ -112,7 +112,8 @@ export function movePower(mon: Mon, move: string) {
   const hits = Array.isArray(mv.hits) ? 3.1 : typeof mv.hits === "number" && mv.hits > 1 ? mv.hits : 1;
   const stat = mv.category === "Physical" ? p.stats.atk : p.stats.spa;
   const turns = TWO_TURN.has(move) && !(move === "Solar Beam" && p.ability === "Drought") ? 2 : 1;
-  return bp * hits * stab * (stat / Math.max(p.stats.atk, p.stats.spa)) * abilityFactor(bare, move) / turns;
+  // Expected power: a 50% move (Zap Cannon) is worth half (Sam, 10-02).
+  return bp * hits * stab * (stat / Math.max(p.stats.atk, p.stats.spa)) * abilityFactor(bare, move) / turns * hitChance(move, p.ability) / 100;
 }
 
 /** Moves that take two turns per hit (charge or recharge), so their power per turn is halved. */
@@ -173,6 +174,12 @@ function matchup(mine: Hit | undefined, theirs: Hit | undefined, myHP: number, t
   return { myHits, theirHits, wins, margin: theirHits - myHits + (faster ? 0.5 : 0) - (switchingIn ? 1 : 0) };
 }
 
+/** Chance in % that the move hits (base accuracy; No Guard always hits, Compound Eyes ×1.3). */
+export function hitChance(move: string, ability?: string) {
+  const acc = moveAccuracy(move);
+  return ability === "No Guard" ? 100 : ability === "Compound Eyes" ? Math.min(100, acc * 1.3) : acc;
+}
+
 /** Abilities that cancel recoil damage. */
 const NO_RECOIL = new Set(["Rock Head", "Magic Guard"]);
 
@@ -210,7 +217,7 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     // roll). It cost Sam WINGS on 10-02: "survives the foe's best hit" ignored Flare Blitz's own recoil.
     const rc = (new Move(gen, moveName(m)) as { recoil?: [number, number] }).recoil;
     const recoilHP = rc && !NO_RECOIL.has(me.ability ?? "") ? Math.floor((dealt * rc[0]) / rc[1]) : 0;
-    return { ...h, pp: s.me.active.pp[i], ...(recoilHP ? { recoilHP, recoilKO: recoilHP >= me.curHP(), recoilRisk: false as boolean } : {}),
+    return { ...h, pp: s.me.active.pp[i], accuracy: Math.round(hitChance(moveName(m), me.ability)), ...(recoilHP ? { recoilHP, recoilKO: recoilHP >= me.curHP(), recoilRisk: false as boolean } : {}),
       ...(opts.bide && h.category !== "Status" ? { bideBackfire: releaseHP + 2 * dealt >= me.curHP() } : {}) };
   }).sort((a, b) => b.pctMax[1] - a.pctMax[1]);
   const enemyMoves = usableMoves(enemyMon).map((m) => ({ ...hit(enemy, me, moveName(m)), pp: enemyMon.pp[enemyMon.moves.indexOf(m)] }))

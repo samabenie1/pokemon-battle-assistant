@@ -74,6 +74,8 @@ took to whoever is in front; Ghost types are immune. myMoves[].bideBackfire = tr
 KO me: never pick it. Prefer a move without bideBackfire, a status move, or a switch (switches[].takesWorst already
 includes the release). If the enemy knows Bide but enemyBide is null, it hasn't used it yet.
 
+myMoves[].accuracy: hit chance in %. A KO move under 100% is NOT a sure KO (Zap Cannon 50%, Focus Blast 70%,
+Hydro Pump 80%…): compare expected damage, and in danger prefer a move that can't miss.
 myMoves[].recoilHP: HP this move costs ME (Flare Blitz, Brave Bird, Double-Edge… worst case). recoilRisk = true:
 recoil plus the enemy's best hit (with a crit) can KO me, so don't use it unless it KOs before the enemy moves;
 recoilKO = true: the recoil alone KOs me, never use it. Prefer a recoil-free attack when the damage is close.

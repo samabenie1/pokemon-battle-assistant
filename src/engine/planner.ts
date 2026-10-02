@@ -5,7 +5,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Generations, Move } from "@smogon/calc";
 import type { Mon } from "../pk8.ts";
-import { abilityName, moveName, speciesName } from "../names.ts";
+import { abilityName, moveName, speciesName, moveAccuracy } from "../names.ts";
 import { toCalc } from "./calc.ts";
 import { GAME } from "../game.ts";
 import { canLearn, HM_MOVES, machineLabel, machineSlot } from "../offsets/b2rom.ts";
@@ -27,6 +27,7 @@ Fixed-damage moves (Night Shade, Seismic Toss…) show eff null and do damage
 equal to the user's level.
 
 Rules:
+- eff already includes accuracy. Never teach an attack with accuracy under 70 (Zap Cannon, Dynamic Punch, Inferno…).
 - Moves marked "hm": true can NOT be forgotten; never put one in replaces.
 - TMs and HMs are reusable (one TM can go to several Pokémon). HM moves can only be deleted in Mistralton City, so
   teach one only if it's worth keeping.
@@ -89,6 +90,7 @@ function moveFor(mon: Mon, name: string) {
     eff: mv.category === "Status" || !mv.bp ? null : Math.round(power(mon, name)),
     ...(mv.recoil ? { recoil: true } : {}),
     ...(HM_MOVES.has(name) ? { hm: true } : {}),
+    ...(moveAccuracy(name) < 100 ? { accuracy: moveAccuracy(name) } : {}),
     ...(mv.category === "Status" ? { op: isOPStatus(name) } : {}),
   };
 }
@@ -170,6 +172,8 @@ function check(st: Step, input: Input): string | null {
       const opt = mon.tmOptions.find((o) => o.tm === st.tm);
       if (!opt) return `${mon.name} can't learn ${st.tm} (or already knows it, or it isn't in the bag)`;
       if (moves.length >= 4 && !moves.includes(st.replaces)) return `${mon.name} doesn't know "${st.replaces}"`;
+      if (opt.category !== "Status" && moveAccuracy(opt.name) < 70)
+        return `${opt.name} only hits ${moveAccuracy(opt.name)}% of the time; too unreliable for a Nuzlocke`;
       if (HM_MOVES.has(st.replaces)) return `${st.replaces} is an HM move and can't be forgotten`;
       const gone = mon.moves.find((m) => m.name === st.replaces);
       if (gone && gone.category !== "Status" && mon.types.includes(gone.type) && opt.type !== gone.type

@@ -155,7 +155,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   // Asleep/frozen: attacking usually does nothing, so the full advisor (cure / switch) decides, never a shortcut.
   // Bide up: the shortcuts don't account for the doubled release, so the full advisor + checks decide.
   const cantAct = analysis.me.status === "slp" || analysis.me.status === "frz" || !!analysis.enemyBide;
-  const sureKO = !cantAct && analysis.iMoveFirst === true && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp && !m.recoilKO);
+  const sureKO = !cantAct && analysis.iMoveFirst === true && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp && !m.recoilKO && m.accuracy >= 100);
   const easy = !cantAct && !analysis.between && !analysis.swap && !analysis.koRisk.maxRoll && !analysis.koRisk.withCrit
     && analysis.activeMatchup.wins && !Object.values(analysis.enemy.boosts ?? {}).some((v) => (v as number) > 0) && !analysis.dynamaxOption?.recommend;
   if (sureKO || easy) {
