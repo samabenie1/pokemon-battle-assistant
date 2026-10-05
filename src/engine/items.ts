@@ -13,7 +13,7 @@ const data = (f: string) => new URL(`../../data/${f}`, import.meta.url);
 const ITEM_NAMES = readFileSync(data("items_en.txt"), "utf8").split("\n").map((s) => s.trim());
 const MACHINES = JSON.parse(readFileSync(data("machines.json"), "utf8")) as { byItem: Record<string, string>; canLearn: Record<string, string[]> };
 // TM/TR → species the player found "Not able" in-game (compatibility is randomized): data/not-able.json.
-const notAble = (): Record<string, string[]> => { try { return JSON.parse(readFileSync(data("not-able.json"), "utf8")); } catch { return {}; } };
+export const notAble = (): Record<string, string[]> => { try { return JSON.parse(readFileSync(data("not-able.json"), "utf8")); } catch { return {}; } };
 
 export const itemLabel = (id: number) => ITEM_NAMES[id] ?? `item#${id}`;
 
@@ -140,7 +140,7 @@ export function bagTips(party: Mon[], general: Pouch[], machines: Pouch[], targe
     for (const m of party) {
       const current = m.moves.filter(Boolean).map(moveName);
       if (current.includes(move) || (blocked[label] ?? []).includes(speciesName(m.species))) continue;
-      if (b2?.compat && !canLearn(b2.compat, m.species, slot)) continue;
+      if (b2?.compat && !canLearn(b2.compat, m.species, slot, m.form)) continue;
       if (current.length < 4) { // a free move slot: anything decent is pure gain
         if (power(m, move) > 0) cands.push({ tm: label, move, mon: speciesName(m.species), gain: 10 + power(m, move) / 100, replaces: "", why: "fills its empty move slot" });
         continue;

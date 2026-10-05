@@ -9,7 +9,7 @@ import { abilityName, moveName, speciesName, moveAccuracy } from "../names.ts";
 import { toCalc } from "./calc.ts";
 import { GAME } from "../game.ts";
 import { canLearn, HM_MOVES, machineLabel, machineSlot } from "../offsets/b2rom.ts";
-import { itemLabel, power, type B2Machines, type Pouch } from "./items.ts";
+import { itemLabel, notAble, power, type B2Machines, type Pouch } from "./items.ts";
 import { isOPStatus } from "./moves.ts";
 
 const client = new Anthropic();
@@ -107,11 +107,12 @@ export interface PlanInput {
 export function planInput(p: PlanInput) {
   const b2 = p.b2;
   const owned = b2 ? p.machines.filter((t) => t.count > 0).map((t) => machineSlot(t.id)).filter((s) => s >= 0) : [];
+  const blocked = notAble();
   const party = p.party.map((m) => {
     const c = toCalc(m);
     const sp = gen.species.get(c.name.toLowerCase().replace(/[^a-z0-9]/g, "") as never) as { nfe?: boolean } | undefined;
     const moves = m.moves.filter(Boolean).map((id) => moveFor(m, moveName(id)));
-    const tmOptions = b2?.compat ? owned.filter((slot) => canLearn(b2.compat!, m.species, slot))
+    const tmOptions = b2?.compat ? owned.filter((slot) => canLearn(b2.compat!, m.species, slot, m.form) && !(blocked[machineLabel(slot)] ?? []).includes(speciesName(m.species)))
       .map((slot) => ({ tm: machineLabel(slot), ...moveFor(m, moveName(b2.moves[slot])) }))
       .filter((o) => !moves.some((x) => x.name === o.name)) : [];
     return {

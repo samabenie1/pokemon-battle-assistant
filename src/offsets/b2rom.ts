@@ -22,14 +22,27 @@ export function readPersonal(romPath: string): { compat: Buffer[]; catchRate: nu
   p += n.readUInt32LE(p + 4);
   p += n.readUInt32LE(p + 4); // BTNF
   const gmif = p + 8;
+  // Alternate formes (e.g. Deoxys-Speed) have their own entries: +0x1C = first forme entry, +0x20 = forme count.
+  FORM_BASE.clear();
+  entries.forEach(([a], i) => { if (n[gmif + a + 0x20] > 1 && n.readUInt16LE(gmif + a + 0x1c)) FORM_BASE.set(i, n.readUInt16LE(gmif + a + 0x1c)); });
   return {
     compat: entries.map(([a]) => n.subarray(gmif + a + TM_BITS, gmif + a + TM_BITS + 13)),
     catchRate: entries.map(([a]) => n[gmif + a + 0x08]),
   };
 }
 
-export const canLearn = (compat: Buffer[], species: number, slot: number) =>
-  !!compat[species] && (compat[species][slot >> 3] >> (slot & 7) & 1) === 1;
+const FORM_BASE = new Map<number, number>();
+/** Personal-data entry for a species in a given forme (forme 0 = the species' own entry). */
+const entryOf = (species: number, form = 0) => (form && FORM_BASE.has(species) ? FORM_BASE.get(species)! + form - 1 : species);
+/** HM slots (92-97) in the RAM move table. */
+export const isHMSlot = (slot: number) => slot >= 92 && slot < 98;
+export const canLearn = (compat: Buffer[], species: number, slot: number, form = 0) => {
+  const c = compat[entryOf(species, form)];
+  // The bitfield runs TM01-92, TM93-95, HM01-06, unlike the RAM move table (TM01-92, HM01-06, TM93-95).
+  // Checked 10-05 against 5 in-game results (Surf: Dialga yes, Kyogre/Xatu no; Night Slash: Gigalith yes, Deoxys-Speed no).
+  const bit = slot < 92 ? slot : isHMSlot(slot) ? slot + 3 : slot - 6;
+  return !!c && (c[bit >> 3] >> (bit & 7) & 1) === 1;
+};
 
 /** Bag item id → machine slot (0..100), or -1. TM01-92 = 328-419, HM01-06 = 420-425, TM93-95 = 618-620. */
 export function machineSlot(item: number) {
