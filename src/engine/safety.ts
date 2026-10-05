@@ -16,7 +16,7 @@ function switchKills(a: Analysis, name: string, nuzlocke: boolean) {
 
 /** A KO this turn that lands before the enemy moves. */
 function sureKO(a: Analysis) {
-  const first = a.iMoveFirst === true;
+  const first = a.iMoveFirst === true && !a.enemyPriority.length;
   return a.myMoves.find((m) => first && m.category !== "Status" && m.ofCurrent[0] >= a.enemy.hp && !m.bideBackfire && !m.recoilKO && m.accuracy >= 100);
 }
 

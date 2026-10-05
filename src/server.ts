@@ -140,7 +140,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
     maxHP: e.maxHP, hpPercent: e.hpPercent, myLevel: analysis.me.level, turn: battleTurn, balls,
     baseRate: romCatchRate(realSpecies),
   }) : undefined;
-  console.log(`[turn] ${analysis.me.name} ${analysis.me.hp}/${analysis.me.maxHP}${analysis.me.status ? ` [${analysis.me.status}]` : ""} vs ${analysis.enemy.name} Lv${analysis.enemy.level} ~${analysis.enemy.hpPercent}%${analysis.enemy.status ? ` [${analysis.enemy.status}]` : ""}${b2Reader ? ` ${b2Reader.debugStatus()}` : ""}`);
+  console.log(`[turn] ${analysis.me.name} ${analysis.me.hp}/${analysis.me.maxHP}${analysis.me.status ? ` [${analysis.me.status}]` : ""} vs ${analysis.enemy.name} Lv${analysis.enemy.level} ~${analysis.enemy.hpPercent}%${analysis.enemy.status ? ` [${analysis.enemy.status}]` : ""} spe ${analysis.me.speed}/${analysis.enemy.speed} stages ${JSON.stringify(analysis.me.boosts)}/${JSON.stringify(analysis.enemy.boosts)}${analysis.enemyPriority.length ? ` prio ${analysis.enemyPriority.join(",")}` : ""}${b2Reader ? ` ${b2Reader.debugStatus()}` : ""}`);
   const train = capOn && team ? training({
     target: TARGET, team: team.team, activeEC: team.activeEC, participants: team.participants,
     enemySpecies: state.enemy.active.species, enemyLevel: e.level, trainer: state.trainer, analysis, nuzlocke: NUZLOCKE,
@@ -155,7 +155,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   // Asleep/frozen: attacking usually does nothing, so the full advisor (cure / switch) decides, never a shortcut.
   // Bide up: the shortcuts don't account for the doubled release, so the full advisor + checks decide.
   const cantAct = analysis.me.status === "slp" || analysis.me.status === "frz" || !!analysis.enemyBide;
-  const sureKO = !cantAct && analysis.iMoveFirst === true && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp && !m.recoilKO && m.accuracy >= 100);
+  const sureKO = !cantAct && analysis.iMoveFirst === true && !analysis.enemyPriority.length && analysis.myMoves.some((m) => m.category !== "Status" && m.ofCurrent[0] >= analysis.enemy.hp && !m.recoilKO && m.accuracy >= 100);
   const easy = !cantAct && !analysis.between && !analysis.swap && !analysis.koRisk.maxRoll && !analysis.koRisk.withCrit
     && analysis.activeMatchup.wins && !Object.values(analysis.enemy.boosts ?? {}).some((v) => (v as number) > 0) && !analysis.dynamaxOption?.recommend;
   if (sureKO || easy) {
@@ -298,7 +298,8 @@ function poll() {
     const mine = s.myActives.map((ec) => byEC(s.battleParty, ec)).filter((m): m is Mon => !!m && m.hp > 0);
     const foes = s.foeActives.map((ec) => byEC(s.enemyTeam, ec)).filter((m): m is Mon => !!m && m.hp > 0);
     if (!mine.length || !foes.length) return;
-    const key = `D:${mine.map((m) => `${m.ec}:${m.hp}:${m.status}`).join(",")}|A:${s.allyActive ? `${s.allyActive.ec}:${s.allyActive.hp}` : ""}|${foes.map((m) => `${m.ec}:${m.hp}:${m.status}`).join(",")}`;
+    const stg = (m: Mon) => Object.values(m.boosts ?? {}).join(",");
+    const key = `D:${mine.map((m) => `${m.ec}:${m.hp}:${m.status}:${stg(m)}`).join(",")}|A:${s.allyActive ? `${s.allyActive.ec}:${s.allyActive.hp}` : ""}|${foes.map((m) => `${m.ec}:${m.hp}:${m.status}:${stg(m)}`).join(",")}`;
     const now = Date.now();
     if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; }
     if (key === lastKey || now - stableSince < 800) return;
@@ -452,7 +453,7 @@ function poll() {
   // Advise once the battle counter has settled (the game is waiting for input).
   const now = Date.now();
   if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; return; }
-  const key = `${between}:${battleEC}:${me.species}:${current.me.active.hp}:${meLive.status}:${foeLive.status}:${exact ? enemyMon.hp : enemyPct}:${meLive.dynamax}:${foeLive.dynamax}:${bide ? bide.hpStart : ""}:${weather?.kind ?? ""}`;
+  const key = `${between}:${battleEC}:${me.species}:${current.me.active.hp}:${meLive.status}:${foeLive.status}:${exact ? enemyMon.hp : enemyPct}:${meLive.dynamax}:${foeLive.dynamax}:${bide ? bide.hpStart : ""}:${weather?.kind ?? ""}:${Object.values(meLive.boosts ?? {}).join(",")}:${Object.values(foeLive.boosts ?? {}).join(",")}`;
   if (now - stableSince >= 800 && key !== lastKey) { lastKey = key; void update(current, !exact, reader.balls(), { team, activeEC: s.activeEC, participants: s.participants }, reader.medicine(), between ? alive : []); }
 }
 

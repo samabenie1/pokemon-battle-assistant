@@ -36,7 +36,7 @@ const NEUTRAL_ABILITY = "Ball Fetch";
 // forms need the game's order; a single alternate forme is unambiguous.
 const FORMS: Record<string, string[]> = {
   Meowth: ["Alola", "Galar"], Darmanitan: ["Zen", "Galar", "Galar-Zen"], Slowbro: ["Mega", "Galar"],
-  Rotom: ["Heat", "Wash", "Frost", "Fan", "Mow"], Lycanroc: ["Midnight", "Dusk"],
+  Rotom: ["Heat", "Wash", "Frost", "Fan", "Mow"], Deoxys: ["Attack", "Defense", "Speed"], Lycanroc: ["Midnight", "Dusk"],
 };
 // Species the calc only knows by a forme name (no plain entry): the battle-start forme.
 const DEFAULT_FORME: Record<string, string> = { Aegislash: "Aegislash-Shield" };
@@ -314,6 +314,8 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     enemy: { confused: !!enemyMon.confused, dynamax: enemy.isDynamaxed, name: enemy.name, level: enemy.level, types: enemy.types, hp: enemy.curHP(), maxHP: enemy.maxHP(), hpPercent: Math.round(100 * enemy.curHP() / enemy.maxHP()), ability: hideAbility ? "???" : enemy.ability, status: enemy.status, speed: effSpeed(enemy), boosts: nonzero(enemyMon.boosts) },
     enemyBench: s.enemy.bench.filter((m) => m.hp > 0).map((m) => ({ name: speciesName(m.species), level: m.level })),
     iMoveFirst: effSpeed(me) > effSpeed(enemy) ? true : effSpeed(me) < effSpeed(enemy) ? false : "speed tie",
+    // Damaging priority moves (Quick Attack, Aqua Jet…) hit before a faster Pokémon, so they rule out a "KO before it moves".
+    enemyPriority: enemyMoves.filter((m) => m.category !== "Status" && new Move(gen, m.move).priority > 0).map((m) => m.move),
     myMoves, enemyMoves, switches, trainer: s.trainer,
     enemyOutOfPP: enemyMon.moves.filter((mv, i) => mv && enemyMon.pp[i] === 0).map(moveName),
     damageScale: k, activeMatchup: activeMatch, swap, koRisk,

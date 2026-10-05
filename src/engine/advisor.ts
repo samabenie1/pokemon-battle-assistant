@@ -12,7 +12,7 @@ You get exact damage-calculator output for this turn as JSON:
 - myMoves: my active Pokémon's moves vs the enemy, with % of the enemy's max HP (pctMax) and KO chance
 - enemyMoves: the enemy's moves that still have PP vs my active Pokémon (enemyOutOfPP lists moves it can no longer use)
 - switches: my bench, with the enemy's worst move against each and their best move back
-- iMoveFirst: speed comparison (ignores priority moves like Ice Shard / Aqua Jet / Quick Attack)
+- iMoveFirst: speed comparison (ignores priority moves); enemyPriority lists the enemy's damaging priority moves, which hit first anyway
 - enemy.hpPercent may be an estimate.
 - healOption: non-null when a deterministic check finds that healing the active Pokémon this turn is viable (it's in danger,
   and the heal outpaces the enemy's max hit). Weigh it against switching or attacking. Healing costs the turn.
