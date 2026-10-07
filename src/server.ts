@@ -68,7 +68,7 @@ const HEALS = new Set(["Slack Off", "Recover", "Roost", "Soft-Boiled", "Milk Dri
 let pendingHit: { foe: number; predicted: number; hpBefore: number; at: number; move: string } | null = null;
 let tips: string[] = [], tipsAt = 0;
 const seenFoes = new Set<number>(); // opponent Pokémon (by EC) that have been on the field this battle
-// Sonnet bag plan: re-planned only when the party/bag/TMs change (not the rule-based hints), one request at a time.
+// Bag plan (Opus): re-planned only when the party/bag/TMs change (not the rule-based hints), one request at a time.
 let plan: BagPlan | null = null, planKey = "", planning = false;
 // Steps Sam skipped (✕ on the page), by step id → text; never shown again and passed to the planner as declined.
 const DECLINED_FILE = new URL("../data/plan-declined.json", import.meta.url);
@@ -83,15 +83,21 @@ function planKeyOf(input: ReturnType<typeof planInput>) {
     shop: input.shop?.stock, money: Math.floor(input.money / 1000), meds: input.medicine.map((m) => `${m.item}:${Math.min(m.count, 3)}`),
   });
 }
+// Cost guard: every plan is an Opus call (~5¢), and money/medicine/level drift changed the key after nearly every
+// battle (~640 plans in a week). Small changes wait for PLAN_COOLDOWN; a party swap or a skipped step re-plans right away.
+const PLAN_COOLDOWN = 10 * 60_000;
+let planUrgentKey = "", plannedAt = 0;
 function replan(input: ReturnType<typeof planInput>) {
   const key = planKeyOf(input);
   if (key === planKey || planning) return;
+  const urgent = JSON.stringify({ party: input.party.map((m) => m.name), declined: input.declined });
+  if (urgent === planUrgentKey && Date.now() - plannedAt < PLAN_COOLDOWN) return;
   planning = true;
   planBag(input).then((p) => {
-    planKey = key; plan = p;
+    planKey = key; plan = p; planUrgentKey = urgent; plannedAt = Date.now();
     console.log(`[plan] ${p.model} ${p.ms} ms, ${p.usage.in}+${p.usage.cached} cached in / ${p.usage.out} out tokens: ${p.steps.map((x) => `${x.text} — ${x.why}`).join(" | ") || "(no steps)"}`);
     if (p.dropped.length) console.log(`[plan] dropped: ${p.dropped.join(" | ")}`);
-  }).catch((e) => { planKey = key; plan = null; console.log("[plan]", (e as Error).message); })
+  }).catch((e) => { planKey = key; plan = null; planUrgentKey = urgent; plannedAt = Date.now(); console.log("[plan]", (e as Error).message); })
     .finally(() => { planning = false; });
 }
 /** Plan steps for the page (skipped ones removed); the rule-based tips only when there's no plan. */

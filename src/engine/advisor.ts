@@ -4,7 +4,7 @@ import type { Analysis } from "./calc.ts";
 import { GAME } from "../game.ts";
 
 const client = new Anthropic();
-const MODEL = process.env.PBA_MODEL ?? "claude-haiku-4-5";
+const MODEL = process.env.PBA_MODEL ?? "claude-haiku-5-5";
 
 const SYSTEM = `You are a Pokémon ${GAME.name} battle coach for an in-game (single-player, singles) playthrough.
 The player's save is randomized: abilities and movesets are unusual, but types and base stats are standard.

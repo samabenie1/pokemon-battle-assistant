@@ -228,7 +228,7 @@ export async function planBag(input: Input): Promise<BagPlan> {
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    output_config: { format: { type: "json_schema", schema: SCHEMA }, effort: "high" },
+    output_config: { format: { type: "json_schema", schema: SCHEMA }, effort: "medium" },
     messages: [{ role: "user", content: JSON.stringify(input) }],
   }, { timeout: 120_000, maxRetries: 1 });
   if (response.stop_reason === "refusal") throw new Error("planner refused");
