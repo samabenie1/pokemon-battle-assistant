@@ -1,5 +1,6 @@
 // Double battles: 2 of mine vs 2 opponents. For each of my actives: every move against each target (with
 // the doubles spread reduction), friendly fire on my partner, and what the two opponents can do to it.
+import { CRIT } from "../game.ts";
 import { Field, Move, Generations } from "@smogon/calc";
 import { moveName, speciesName } from "../names.ts";
 import type { Mon } from "../pk8.ts";
@@ -47,7 +48,7 @@ export function analyzeDouble(s: DoubleState, nuzlocke: boolean) {
     const myPct = (100 * me.curHP()) / me.maxHP();
     const focus = threats.reduce((sum, t) => sum + t.pctMax[1], 0);
     const koRisk = {
-      single: threats.some((t) => t.pctMax[1] >= myPct || (nuzlocke && t.pctMax[1] * 1.5 >= myPct)),
+      single: threats.some((t) => t.pctMax[1] >= myPct || (nuzlocke && t.pctMax[1] * CRIT >= myPct)),
       focused: focus >= myPct,
     };
     return {
@@ -79,7 +80,7 @@ export function analyzeDouble(s: DoubleState, nuzlocke: boolean) {
   // In danger = a FASTER foe can KO it before it acts (or both foes together can, in a Nuzlocke).
   const danger = actives.map((a) => {
     const hpPct = (100 * a.hp) / a.maxHP;
-    const fast = a.threats.filter((t) => t.faster && t.pctMax[1] * (nuzlocke ? 1.5 : 1) >= hpPct);
+    const fast = a.threats.filter((t) => t.faster && t.pctMax[1] * (nuzlocke ? CRIT : 1) >= hpPct);
     return fast.length > 0 || (nuzlocke && a.koRisk.focused);
   });
 

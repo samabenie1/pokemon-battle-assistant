@@ -21,6 +21,14 @@ Notable changes, newest first. Dates are when the change landed on `main`.
 - Stall, Lagging Tail and Full Incense count as always moving last.
 
 ### Fixed
+- **Crit-KO risk in a Nuzlocke means switching.** If a crit can KO the active Pokémon and any switch-in survives this
+  turn's hit even as a crit, the advice switches to it, whether or not it wins the matchup outright. Before, the
+  advice only switched to a Pokémon that clearly won, so it said "Earthquake" into a Darmanitan whose crit Flare
+  Blitz could KO Deoxys.
+- **Gen 5 crits do double damage.** Every crit check used the Gen 6+ 1.5×, which underestimated the risk in Black 2.
+- **Faint odds on the page.** Each move now carries the chance your Pokémon faints this turn (your KO odds and speed,
+  the foe's accuracy, damage rolls and the 1/16 crit rate). When the pick still carries risk (trapped, or no
+  switch-in survives), a red banner shows the odds, e.g. "⚠ 6% chance Deoxys faints this turn".
 - **Trapping abilities.** Arena Trap (grounded targets), Shadow Tag and Magnet Pull (Steel targets) now block
   switching and running once the foe's ability is known. Before, the advice still said "switch to COOKIE" while
   Deoxys was stuck against an Arena Trap Jolteon.

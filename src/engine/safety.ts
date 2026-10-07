@@ -1,5 +1,6 @@
 // Guards around the LLM advice: a deterministic fallback (for timeouts/errors) and a
 // checker that flags recommendations the damage numbers say are unsafe.
+import { CRIT } from "../game.ts";
 import { preferNotAhead, type Analysis } from "./calc.ts";
 import type { Advice } from "./advisor.ts";
 import { sameMon } from "../names.ts";
@@ -10,8 +11,17 @@ const pct = (hp: string) => { const [c, m] = hp.split("/").map(Number); return (
 function switchKills(a: Analysis, name: string, nuzlocke: boolean) {
   const sw = a.switches.find((s) => s.name === name);
   if (!sw) return null;
-  const worst = (sw.takesWorst?.pctMax[1] ?? 0) * (nuzlocke ? 1.5 : 1);
+  const worst = (sw.takesWorst?.pctMax[1] ?? 0) * (nuzlocke ? CRIT : 1);
   return worst >= pct(sw.hp) ? { worst: Math.round(sw.takesWorst!.pctMax[1]), move: sw.takesWorst!.move } : null;
+}
+
+/** Nuzlocke (Sam, 10-06): if a crit can KO the active, any switch-in that survives the hit even with a crit beats
+ *  staying in, whether or not it "wins" the matchup. Least damage taken first; one that already left this foe last. */
+function critProofSwitch(a: Analysis) {
+  // Judged on this turn's hit (takesNow): a setup move threatens whoever is in next turn, and that's re-checked then.
+  const now = (x: Analysis["switches"][number]) => x.takesNow?.pctMax[1] ?? 0;
+  return preferNotAhead(a.switches.filter((s) => now(s) * CRIT < pct(s.hp)))
+    .sort((x, y) => Number(x.recentlyOut) - Number(y.recentlyOut) || now(x) - pct(x.hp) - (now(y) - pct(y.hp)))[0];
 }
 
 /** A KO this turn that lands before the enemy moves. */
@@ -59,6 +69,8 @@ export function fallbackAdvice(a: Analysis, nuzlocke: boolean): Advice {
     .filter((s) => !switchKills(a, s.name, nuzlocke) && s.matchup.wins)) // a switch that can't win just loses turns
     .sort((x, y) => (x.takesWorst?.pctMax[1] ?? 0) - (y.takesWorst?.pctMax[1] ?? 0))[0];
   if (danger && safe) return { ...base, action: "switch", choice: safe.name, reason: `${a.me.name} can be KO'd this turn; ${safe.name} takes at most ${safe.takesWorst?.pctMax[1] ?? 0}% coming in.`, alternative: a.myMoves[0]?.move ?? "–" };
+  const shelter = nuzlocke && danger ? critProofSwitch(a) : undefined;
+  if (shelter) return { ...base, action: "switch", choice: shelter.name, reason: `${a.me.name} can be KO'd this turn${a.koRisk.maxRoll ? "" : " by a crit"}; ${shelter.name} takes at most ${shelter.takesNow?.pctMax[1] ?? 0}% switching in, and even a crit can't KO it.`, alternative: a.myMoves[0]?.move ?? "–" };
   // Staying in is a sure KO and nothing is crit-proof: take the switch-in that survives a normal hit with the most room.
   const lessBad = a.koRisk.maxRoll ? preferNotAhead(a.switches
     .filter((s) => !switchKills(a, s.name, false) && s.matchup.wins))
@@ -139,8 +151,9 @@ export function checkAdvice(adv: Advice, a: Analysis, nuzlocke: boolean): string
     if (a.enemy.status && STATUS_MOVES.has(adv.choice))
       return `${a.enemy.name} already has a status (${a.enemy.status}), so ${adv.choice} would fail. Attack instead.`;
     const winningSwitch = a.switches.some((s) => s.matchup.wins && !switchKills(a, s.name, false));
-    if (danger && winningSwitch && !(a.iMoveFirst === true && mv.ofCurrent[0] >= a.enemy.hp))
-      return `Risky: ${a.enemy.name}'s ${a.koRisk.move} can KO ${a.me.name} this turn, and ${adv.choice} doesn't surely KO first.`;
+    const shelter = nuzlocke ? critProofSwitch(a) : undefined;
+    if (danger && (winningSwitch || shelter) && !(a.iMoveFirst === true && mv.ofCurrent[0] >= a.enemy.hp))
+      return `Risky: ${a.enemy.name}'s ${a.koRisk.move} can KO ${a.me.name} this turn${a.koRisk.maxRoll ? "" : " with a crit"}, and ${adv.choice} doesn't surely KO first.${shelter ? ` ${shelter.name} takes at most ${shelter.takesNow?.pctMax[1] ?? 0}% switching in (crit-proof).` : ""}`;
   }
   return null;
 }

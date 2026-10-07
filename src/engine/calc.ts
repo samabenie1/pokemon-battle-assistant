@@ -4,7 +4,7 @@ import { calculate, Generations, Move, Pokemon, Field } from "@smogon/calc";
 import type { StatusName } from "@smogon/calc/dist/data/interface.js";
 import { NATURES, abilityName, itemName, monLabel, moveAccuracy, moveName, speciesName } from "../names.ts";
 import type { Mon } from "../pk8.ts";
-import { GAME } from "../game.ts";
+import { CRIT, GAME } from "../game.ts";
 
 const gen = Generations.get(GAME.gen);
 
@@ -239,6 +239,22 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const enemyMoves = usableMoves(enemyMon).map((m) => ({ ...hit(enemy, me, moveName(m)), pp: enemyMon.pp[enemyMon.moves.indexOf(m)] }))
     .sort((a, b) => b.pctMax[1] - a.pctMax[1]);
 
+  // Faint odds this turn if I stay in and use each move (Sam, 10-06: "why did you tell me to use earthquake when I could
+  // be KO"). Assumes the foe uses whichever move is most likely to KO; crits are 1/16 in Gen 2-5 (1/24 from Gen 6).
+  const rolls = (att: Pokemon, def: Pokemon, mv: string, crit: boolean) => {
+    const d = calculate(gen, att, def, new Move(gen, mv, { isCrit: crit })).damage;
+    return (Array.isArray(d) ? (d as number[]).flat() : [d as number]) as number[];
+  };
+  const koShare = (r: number[], hp: number) => r.filter((x) => x >= hp).length / r.length;
+  const critRate = GAME.gen >= 6 ? 1 / 24 : 1 / 16;
+  const enemyKOChance = Math.max(0, ...usableMoves(enemyMon).map(moveName).filter((mv) => new Move(gen, mv).category !== "Status").map((mv) =>
+    (hitChance(mv, enemy.ability) / 100) * ((1 - critRate) * koShare(rolls(enemy, me, mv, false), me.curHP()) + critRate * koShare(rolls(enemy, me, mv, true), me.curHP()))));
+  const firstNoPrio = effSpeed(me) > effSpeed(enemy) && !usableMoves(enemyMon).some((m) => new Move(gen, moveName(m)).priority > 0 && new Move(gen, moveName(m)).category !== "Status");
+  for (const mv of myMoves as (typeof myMoves[number] & { faintRisk?: number })[]) {
+    const myKO = mv.category === "Status" ? 0 : (mv.accuracy / 100) * koShare(rolls(me, enemy, mv.move, false), enemy.curHP());
+    mv.faintRisk = +(enemyKOChance * (firstNoPrio ? 1 - myKO : 1)).toFixed(4);
+  }
+
   // Matchup: hits each side needs to KO the other (average damage), plus speed.
   // margin > 0 means we should win the exchange; a switch-in eats one free hit and loses a turn.
   const activeMatch = matchup(myMoves[0], enemyMoves[0], me.curHP(), enemy.curHP(), effSpeed(me) > effSpeed(enemy), false);
@@ -303,7 +319,9 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     const bideWorst = bidePct > (worstIn?.pctMax[1] ?? 0) ? { move: "Bide (release)", pctMax: [bidePct, bidePct] } : null;
     return {
       name: monLabel(b), level: b.level, overLeveled: ahead(b), recentlyOut: !!opts.leftThisFoe?.has(b.ec), hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
-      takesWorst: bideWorst ?? (worstIn && { move: worstIn.move, pctMax: worstIn.pctMax }), bestMove: bestOut && { move: bestOut.move, pctMax: bestOut.pctMax, ko: bestOut.ko },
+      takesWorst: bideWorst ?? (worstIn && { move: worstIn.move, pctMax: worstIn.pctMax }),
+      // The hit it actually eats switching in this turn (no setup boost yet; Hex vs a status it already has).
+      takesNow: bideWorst ?? (worstNow && { move: worstNow.move, pctMax: worstNow.pctMax }), bestMove: bestOut && { move: bestOut.move, pctMax: bestOut.pctMax, ko: bestOut.ko },
       speed: effSpeed(bp),
       matchup: disabled
         ? { myHits: 10, theirHits: 0, wins: false, margin: -10 }
@@ -316,12 +334,12 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const worstMax = enemyMoves[0]?.pctMax[1] ?? 0;
   const bideKOs = !!opts.bide && releaseHP >= me.curHP();
   const koRisk = bideKOs ? { move: "Bide (release)", maxRoll: true, withCrit: true }
-    : { move: enemyMoves[0]?.move ?? null, maxRoll: worstMax >= myPct, withCrit: worstMax * 1.5 >= myPct };
-  // recoilRisk: this move's recoil plus the foe's best hit (×1.5 for a crit) can KO me. A KO before the foe moves
+    : { move: enemyMoves[0]?.move ?? null, maxRoll: worstMax >= myPct, withCrit: worstMax * CRIT >= myPct };
+  // recoilRisk: this move's recoil plus the foe's best hit (crit: CRIT) can KO me. A KO before the foe moves
   // only leaves the recoil itself (recoilKO).
   const worstHP = (worstMax / 100) * me.maxHP();
   for (const mv of myMoves)
-    if (mv.recoilHP) mv.recoilRisk = mv.recoilKO || mv.recoilHP + worstHP * 1.5 >= me.curHP();
+    if (mv.recoilHP) mv.recoilRisk = mv.recoilKO || mv.recoilHP + worstHP * CRIT >= me.curHP();
 
   // Only suggest a swap when it clearly beats staying in.
   // Safety first: the winning switch-in that takes the least damage; level only breaks near-ties (training mode).
@@ -381,7 +399,7 @@ function dynamaxOption(s: BattleState, enemy: Pokemon, now: { wins: boolean }, k
   // Would Dynamax make this safe? Survive the enemy's best hit with a crit (on doubled HP), and KO within
   // the 3 Dynamax turns with the best Max Move (average damage vs the enemy's current HP).
   const myPct = (100 * dm.curHP()) / dm.maxHP();
-  const survives = (worstIn?.pctMax[1] ?? 0) * 1.5 < myPct;
+  const survives = (worstIn?.pctMax[1] ?? 0) * CRIT < myPct;
   const best = maxMoves[0];
   const avgHit = best ? (best.ofCurrent[0] + best.ofCurrent[1]) / 2 : 0;
   const hitsToKO = avgHit > 0 ? Math.ceil(enemy.curHP() / avgHit) : 99;

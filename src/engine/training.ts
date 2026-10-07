@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { expForLevel, type Mon } from "../pk8.ts";
 import { monLabel } from "../names.ts";
 import type { Analysis } from "./calc.ts";
-import { GAME } from "../game.ts";
+import { CRIT, GAME } from "../game.ts";
 
 const BASE_EXP = JSON.parse(readFileSync(new URL("../../data/baseexp.json", import.meta.url), "utf8")) as Record<string, number>;
 
@@ -56,7 +56,7 @@ export function training(opts: {
     if (!sw) return false;
     const [cur, max] = sw.hp.split("/").map(Number);
     const worst = ((sw.takesWorst?.pctMax[1] ?? 0) / 100) * max;
-    return opts.nuzlocke ? cur - worst * 1.5 >= 0.5 * max : cur - worst > 0; // survive a crit with half HP left
+    return opts.nuzlocke ? cur - worst * CRIT >= 0.5 * max : cur - worst > 0; // survive a crit with half HP left
   };
   const laggard = members
     .filter((m) => !m.active && !m.participant && !m.atCap && Number(m.hp) > 0 && safeSwitch(m.name))

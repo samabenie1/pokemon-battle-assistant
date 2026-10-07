@@ -9,7 +9,7 @@ import { demoState } from "./sources/demo.ts";
 import { LiveReader } from "./sources/live.ts";
 import { B2Reader } from "./sources/live-b2.ts";
 import { analyzeRotation, type RotationAnalysis } from "./engine/rotation.ts";
-import { GAME } from "./game.ts";
+import { CRIT, GAME } from "./game.ts";
 import { B2_BOSSES } from "./offsets/b2.ts";
 import { abilityName, monLabel, moveName, speciesName } from "./names.ts";
 import { catchOdds } from "./engine/catch.ts";
@@ -120,7 +120,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
     else {
       const options = per[0].switches.map((sw) => {
         const worst = Math.max(...per.map((a) => a.switches.find((x) => x.name === sw.name)?.takesWorst?.pctMax[1] ?? 0));
-        return { ...sw, worst, safe: worst * (NUZLOCKE ? 1.5 : 1) < hpPct(sw.hp) };
+        return { ...sw, worst, safe: worst * (NUZLOCKE ? CRIT : 1) < hpPct(sw.hp) };
       }).filter((o) => o.safe).sort((x, y) => x.worst - y.worst);
       const best = preferNotAhead(options)[0];
       pick = best

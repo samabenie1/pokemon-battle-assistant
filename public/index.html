@@ -160,6 +160,18 @@ function levelUpBox(d) {
   return box + line;
 }
 
+// Staying in with this move can still lose the Pokémon (a crit, a high roll): say so in red with the odds (Sam, 10-06).
+function faintBanner(a, adv) {
+  if (!adv || adv.action !== "move" || a.between) return "";
+  const mv = (a.myMoves ?? []).find((m) => m.move === adv.choice);
+  const r = mv?.faintRisk ?? 0;
+  if (r <= 0) return "";
+  const p = r < 0.01 ? "<1" : Math.round(100 * r);
+  const why = a.koRisk?.maxRoll ? `${esc(a.koRisk.move)} can KO without a crit` : `a crit ${esc(a.koRisk?.move ?? "hit")} can KO`;
+  const trapped = a.trapped ? ` No switch possible (${esc(a.trapped)}).` : !(a.switches ?? []).length ? " No switch-in survives it." : "";
+  return `<div style="background:var(--bad);color:#fff;border-radius:8px;padding:8px 12px;margin-top:10px;font-weight:700">⚠ ${p}% chance ${esc(a.me.name.split(" (")[0])} faints this turn: ${why}.${trapped}</div>`;
+}
+
 function render(d) {
   if (d.rotation) { renderRotation(d); document.getElementById("rec").insertAdjacentHTML("afterbegin", levelUpBox(d)); return; }
   if (d.doubles) { renderDoubles(d); document.getElementById("rec").insertAdjacentHTML("afterbegin", levelUpBox(d)); return; }
@@ -200,7 +212,8 @@ function render(d) {
     rec.innerHTML = `<div class="label">${a.between ? `NEXT UP: ${esc(a.enemy.name)}${a.enemy.dynamax ? " (expect Dynamax)" : ""} · ` : ""}${d.advice.model === "calculator" ? (d.advice.rejected ? "SAFE PICK (calculator)" : "CALCULATOR PICK (AI timed out)") : "RECOMMENDED"} · ${d.advice.action === "switch" ? "SWITCH TO" : d.advice.choice === "Stay" ? "DON'T SWITCH" : d.advice.action === "item" ? "USE ITEM" : d.advice.action === "run" ? "RUN AWAY" : "USE"}</div>
       <div class="choice">${d.advice.choice === "Stay" ? `Stay in with ${esc(a.me.name.split(" (")[0])}` : esc(d.advice.choice)}</div><div class="reason">${esc(d.advice.reason)}</div>
       <div class="alt">Alternative: ${esc(d.advice.alternative)}</div>
-      ${d.advice.rejected ? `<div class="meta" style="margin-top:8px">✋ ${esc(d.advice.rejected)}</div>` : ""}`;
+      ${d.advice.rejected ? `<div class="meta" style="margin-top:8px">✋ ${esc(d.advice.rejected)}</div>` : ""}
+      ${faintBanner(a, d.advice)}`;
   } else if (d.error) {
     rec.innerHTML = `<div class="label">ADVICE UNAVAILABLE</div><div class="reason">${esc(d.error)}</div><div class="alt">The damage numbers below are still accurate.</div>`;
   } else {

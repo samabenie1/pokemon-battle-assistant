@@ -1,7 +1,7 @@
 // Healing suggestions from the medicine pouch: in battle (when it beats attacking or
 // switching) and between battles (top the team up before the next fight).
 import type { Analysis } from "./calc.ts";
-import { GAME } from "../game.ts";
+import { CRIT, GAME } from "../game.ts";
 
 // HP restored per item (Gen 8; Gen 5 values patched below). Revives are never suggested (fainted = gone in a Nuzlocke).
 const HEALS: Record<number, { name: string; hp: number }> = {
@@ -56,7 +56,7 @@ export function battleHeal(a: Analysis, items: Item[], nuzlocke: boolean) {
   const hpAfter = me.hp + restored;
   // Healing gives the enemy a free hit, so it only helps if we're still ahead after it.
   const worstMaxHP = ((a.enemyMoves[0]?.pctMax[1] ?? 0) / 100) * me.maxHP;
-  const crit = nuzlocke ? 1.5 : 1;
+  const crit = nuzlocke ? CRIT : 1;
   const survivesAfterHeal = hpAfter - worstMaxHP * crit > 0;
   const outpaces = restored > worstMaxHP;
   const inDanger = a.koRisk.maxRoll || (nuzlocke && a.koRisk.withCrit) || me.hp / me.maxHP < 0.35;

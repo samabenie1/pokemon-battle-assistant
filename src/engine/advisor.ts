@@ -110,7 +110,10 @@ const RUN_RULES = [
   NUZLOCKE && `This is a NUZLOCKE: a Pokémon that faints is lost forever. Safety beats speed.
 - koRisk says whether the enemy's strongest move can KO the active Pokémon this turn at max roll, or with a crit.
 - If koRisk.maxRoll is true and you can't KO first with certainty, switch to a safe teammate instead.
-- Treat koRisk.withCrit as a real danger when a safe option that costs little exists.
+- Treat koRisk.withCrit as a real danger: if ANY switches[] entry survives its takesWorst even as a crit (Gen 5 crits do
+  double damage), switch to it, even if it doesn't win the matchup outright. Staying in on a crit-KO risk is only OK
+  when no switch-in survives a crit, or your move surely KOs first.
+- myMoves[].faintRisk = the chance the active faints this turn if it uses that move (0.03 = 3%).
 - Never sacrifice a Pokémon, and never recommend a move that only wins on a good roll when a safe alternative exists.`,
   TARGET && `The player is levelling the team EVENLY to Lv ${TARGET} (the next boss / level cap), and over-levelled Pokémon get boxed.
 - training.members lists each Pokémon's level and EXP. ${GAME.expShareAll ? "Anyone who's been on the field gets full EXP, the rest get half." : "Only Pokémon that were on the field get EXP (split between them); the bench gets none."}
