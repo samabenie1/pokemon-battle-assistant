@@ -78,6 +78,8 @@ export interface LiveSnapshot {
   foeFieldEC: number | null;
   /** Battle positions (0xF00018 apart): singles = [foe, me]; doubles = [foe, foe, me, me]. */
   double: boolean;
+  /** Black 2 rotation battle: myActives/foeActives = the 3 on the field each, front first. */
+  rotation?: boolean;
   myActives: number[];   // ECs
   foeActives: number[];  // ECs
   /** Partner (multi) battles, Black 2: the AI ally's Pokémon on the field (not controlled by the player). */

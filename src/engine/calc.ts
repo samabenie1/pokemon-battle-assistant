@@ -155,6 +155,9 @@ export function effSpeed(p: Pokemon) {
   const stage = p.boosts.spe ?? 0;
   const mult = stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
   const slowStart = p.ability === "Slow Start" && p.abilityOn ? 0.5 : 1;
+  // Stall / Lagging Tail / Full Incense: always moves last in its priority bracket (BEEF CAKE's Slaking, 10-06).
+  // Speed 0 makes every "I move first" check fail; priority moves are handled separately.
+  if (p.ability === "Stall" || p.item === "Lagging Tail" || p.item === "Full Incense") return 0;
   return Math.floor(p.stats.spe * mult * (p.status === "par" ? 0.5 : 1) * slowStart);
 }
 

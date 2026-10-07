@@ -157,17 +157,24 @@ export class B2Reader {
     // Partner (multi) battles: the battler table is 4 clients × 7 slots (6 Pokémon + a count): client 0 = me,
     // 1 = foe trainer 1, 2 = my AI ally, 3 = foe trainer 2 (mapped 10-02 from a live ally battle). Each client has
     // ONE Pokémon on the field (its first slot), so I control only mine[0].
-    const ally = this.side(2 * CLIENT_STRIDE).filter((m) => m.tid !== mine[0].tid || m.ot !== mine[0].ot);
-    const foes2 = this.side(3 * CLIENT_STRIDE);
+    // Partner battles only happen in doubles (flag 1). The AI partner's Pokémon have a BLANK OT in RAM (10-06,
+    // Azelf/Weezing/Kyurem), so don't filter on OT.
+    const flag0 = this.ds.u8(this.base + B2.doubleTripleFlag);
+    const ally = flag0 !== 1 ? [] : this.side(2 * CLIENT_STRIDE).filter((m) => m.tid !== mine[0].tid || m.ot !== mine[0].ot);
+    const foes2 = flag0 !== 1 ? [] : this.side(3 * CLIENT_STRIDE);
     const multi = ally.length > 0 || foes2.length > 0;
     if (multi) { foes.push(...foes2.filter((m) => !foes.some((f) => f.ec === m.ec))); }
     const allyActive = ally[0] && ally[0].hp > 0 ? ally[0] : null;
     // Doubles: the first two battlers of each side are on the field. Triple/rotation battles are
     // read as doubles (the first two), which is the best the engine supports.
     const flag = this.ds.u8(this.base + B2.doubleTripleFlag);
-    const nActive = multi ? 1 : flag === 0 ? 1 : 2;
-    const foeField = multi ? [foes[0], foes2[0]].filter((m): m is BattleMon => !!m) : foes.slice(0, nActive);
-    const double = multi || (nActive === 2 && mine.length >= 2 && foes.length >= 2);
+    // Rotation (flag 3, confirmed 10-06): 3 on the field each; the slot order turns with the wheel, slot 0 = front.
+    const rotation = !multi && flag === 3 && mine.length >= 1 && foes.length >= 1;
+    const nActive = rotation ? 3 : multi ? 1 : flag === 0 ? 1 : 2;
+    // Trainer multi battle: one foe on the field per enemy trainer (clients 1 and 3). WILD partner battle: no client 3,
+    // and both wild Pokémon sit in client 1 (10-06, Cottonee + Lickitung), so the first two of client 1 are out.
+    const foeField = multi && foes2.length ? [foes[0], foes2[0]].filter((m): m is BattleMon => !!m) : foes.slice(0, multi ? 2 : nActive);
+    const double = !rotation && (multi || (nActive >= 2 && mine.length >= 2 && foes.length >= 2));
     const me = mine[0];
     this.participants.add(me.ec);
     if (double) this.participants.add(mine[1].ec);
@@ -199,7 +206,7 @@ export class B2Reader {
       activeEC: me.ec, participants: new Set(this.participants),
       enemyTeam: foes as (Mon & { maxHP: number })[],
       foeFieldEC: foes[0].ec,
-      double, myActives: double && !multi ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: foeField.map((m) => m.ec), allyActive,
+      double, rotation, myActives: rotation ? mine.slice(0, 3).map((m) => m.ec) : double && !multi ? [mine[0].ec, mine[1].ec] : [me.ec], foeActives: foeField.map((m) => m.ec), allyActive,
       battleParty: mine, used, foeUsed,
       trainer: this.ds.u16(this.base + B2.enemyTrainerID) !== 0,
       trainerId: this.ds.u16(this.base + B2.enemyTrainerID),

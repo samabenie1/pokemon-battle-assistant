@@ -61,7 +61,10 @@ PBA_TARGET_LEVEL=20 npm run b2   # Gen 5 rules, Nuzlocke mode on
 - **Level-up move advice**: when the game offers a new move, the page says which move to forget (or to skip it), and
   lists what each Pokémon learns next. Uses standard B2W2 learnsets, so it assumes learnsets aren't randomized.
 - Works with randomized ROMs (e.g. Universal Pokémon Randomizer ZX): abilities are read from memory.
-- Not yet: doubles verification, live status conditions, bag/TM tips, PC boxes. `node --import tsx src/tools/b2-peek.ts`
+- Doubles, partner battles (an AI ally, including in wild grass) and **rotation battles** (one pick: who to rotate to
+  the front and which move, safe against all three foes on the field). Triple battles aren't supported yet.
+- Advice never suggests catching; the catch-odds panel only shows the numbers.
+- Not yet: triple battles, live status conditions, PC boxes. `node --import tsx src/tools/b2-peek.ts`
   prints what the reader sees.
 
 ## How it works
@@ -114,6 +117,10 @@ Contributions welcome, especially live status conditions and double battles.
 | `ignored-items.json` | item ids to never suggest (e.g. if the bag data disagrees with what you have) |
 | `not-able.json`, `tms-checked.json` | TMs a Pokémon can't learn / TMs you've already tried (randomized compatibility) |
 | `dead.json` | Nuzlocke deaths, for your own records |
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Support
 

@@ -8,6 +8,7 @@ import { analyzeDouble, checkDoubleAdvice, type DoubleAnalysis } from "./engine/
 import { demoState } from "./sources/demo.ts";
 import { LiveReader } from "./sources/live.ts";
 import { B2Reader } from "./sources/live-b2.ts";
+import { analyzeRotation, type RotationAnalysis } from "./engine/rotation.ts";
 import { GAME } from "./game.ts";
 import { B2_BOSSES } from "./offsets/b2.ts";
 import { abilityName, monLabel, moveName, speciesName } from "./names.ts";
@@ -19,6 +20,7 @@ import { checkAdvice, fallbackAdvice } from "./engine/safety.ts";
 import { bagTips, itemLabel } from "./engine/items.ts";
 import { planBag, planInput, type BagPlan } from "./engine/planner.ts";
 import { newMoves, type NewMove } from "./engine/moves.ts";
+import { AbilityInference, effectiveness } from "./engine/infer.ts";
 import { toCalc } from "./engine/calc.ts";
 
 const TARGET = Number(process.env.PBA_TARGET_LEVEL) || 0;
@@ -38,7 +40,7 @@ type Status = "no-emulator" | "waiting" | "trainer" | "battle";
 let latest: { status: Status; analysis?: Analysis; advice?: Advice; error?: string; estimated?: boolean; catch?: ReturnType<typeof catchOdds>; catchKO?: string[]; training?: Training; nuzlocke?: boolean;
   heal?: ReturnType<typeof battleHeal>; bagTips?: string[]; planSteps?: { id: string; text: string; why: string }[];
   newMoves?: NewMove[];
-  doubles?: DoubleAnalysis; doubleAdvice?: DoubleAdvice; cure?: { item: string; count: number; target: string; status: string } | null; topUp?: ReturnType<typeof topUp>; nextPick?: { action: string; choice: string; reason: string }; at: number } = { status: "waiting", at: Date.now() };
+  doubles?: DoubleAnalysis; doubleAdvice?: DoubleAdvice; rotation?: RotationAnalysis; cure?: { item: string; count: number; target: string; status: string } | null; topUp?: ReturnType<typeof topUp>; nextPick?: { action: string; choice: string; reason: string }; at: number } = { status: "waiting", at: Date.now() };
 const clients = new Set<http.ServerResponse>();
 // Level-up move offers (Black 2 learnsets), attached to every update so the page always shows them.
 let moveTips: NewMove[] = [];
@@ -48,6 +50,9 @@ const push = () => { latest.newMoves = moveTips; for (const c of clients) c.writ
 const setStatus = (status: Status, extra: Partial<typeof latest> = {}) => {
   const changed = latest.status !== status || latest.analysis || JSON.stringify(extra.topUp) !== JSON.stringify(latest.topUp)
     || JSON.stringify(extra.bagTips) !== JSON.stringify(latest.bagTips) || JSON.stringify(extra.planSteps) !== JSON.stringify(latest.planSteps);
+  // Leaving the battle view must clear lastKey, or a one-poll blip to "waiting" mid-battle (10-06: wild Octillery,
+  // during the AI call) leaves the page stuck there until the HP changes, because the unchanged key skips update().
+  if (latest.status === "battle" && status !== "battle") { lastKey = ""; console.log(`[status] battle → ${status}`); }
   if (changed) { latest = { status, ...extra, at: Date.now() }; push(); }
 };
 
@@ -60,7 +65,7 @@ const damageScale = new Map<number, number>();
 const HEALS = new Set(["Slack Off", "Recover", "Roost", "Soft-Boiled", "Milk Drink", "Synthesis", "Moonlight", "Morning Sun",
   "Shore Up", "Heal Order", "Wish", "Rest", "Strength Sap", "Aqua Ring", "Ingrain", "Leech Seed", "Giga Drain", "Drain Punch",
   "Horn Leech", "Leech Life", "Draining Kiss", "Oblivion Wing", "Mega Drain", "Absorb", "Parabolic Charge"]);
-let pendingHit: { foe: number; predicted: number; hpBefore: number; at: number } | null = null;
+let pendingHit: { foe: number; predicted: number; hpBefore: number; at: number; move: string } | null = null;
 let tips: string[] = [], tipsAt = 0;
 const seenFoes = new Set<number>(); // opponent Pokémon (by EC) that have been on the field this battle
 // Sonnet bag plan: re-planned only when the party/bag/TMs change (not the rule-based hints), one request at a time.
@@ -230,7 +235,16 @@ let owned = new Set<number>(); // species caught so far: their randomized abilit
 const REVEALED = new URL("../data/revealed.json", import.meta.url);
 const revealed = (): Record<string, string> => { try { return JSON.parse(readFileSync(REVEALED, "utf8")); } catch { return {}; } };
 const abilityKnown = (species: number) => owned.has(species) || species in revealed();
+// Mark a foe's ability as learned (Sam saw it, or infer.ts saw it act) and redo the advice with it.
+const infer = new AbilityInference();
+function reveal(m: Mon, why: string) {
+  if (abilityKnown(m.species)) return;
+  try { writeFileSync(REVEALED, JSON.stringify({ ...revealed(), [m.species]: abilityName(m.ability) })); } catch (e) { console.log("[reveal]", (e as Error).message); return; }
+  console.log(`[reveal] ${speciesName(m.species)}: ${abilityName(m.ability)} (${why})`);
+  lastKey = "";
+}
 let current: BattleState | null = null;
+let onFieldFoes: Mon[] = []; // for /reveal: the foe(s) Sam can see right now
 
 function poll() {
   const s = reader.poll();
@@ -254,7 +268,7 @@ function poll() {
     }
   } catch (e) { console.log("[newmoves]", (e as Error).message); }
   if (!s.inBattle) {
-    battleEC = 0; current = null; lastKey = ""; dynamaxUsed = false; seenFoes.clear(); weather = null; prevMyEC = prevFoeEC = 0; transform = null;
+    battleEC = 0; current = null; lastKey = ""; infer.reset(); dynamaxUsed = false; seenFoes.clear(); weather = null; prevMyEC = prevFoeEC = 0; transform = null;
     // Between battles: who needs healing before the next fight (save-copy HP is current here).
     const team = s.party.map((m) => ({ name: monLabel(m), hp: m.hp, maxHP: toCalc(m).maxHP() }));
     // Poké Mart buy menu: checked every 2 s; a list seen twice in a row is the open shop. Opening one re-plans now.
@@ -292,12 +306,34 @@ function poll() {
     return setStatus("waiting", { topUp: topUp(team, reader.medicine()), bagTips: [...statusTips, ...planTips()], planSteps: planSteps() });
   }
   // The opponent's party blocks start at the wild slot: 1 Pokémon for wild battles, more for trainers.
+  // ---- Rotation battles: 3 each, the front acts, both sides rotate freely. Calculator pick vs all their field Pokémon. ----
+  if (s.rotation) {
+    const byEC = (list: Mon[], ec: number) => list.find((m) => m.ec === ec);
+    const mine = s.myActives.map((ec) => byEC(s.battleParty, ec)).filter((m): m is Mon => !!m);
+    const foes = s.foeActives.map((ec) => byEC(s.enemyTeam, ec)).filter((m): m is Mon => !!m);
+    if (!mine.some((m) => m.hp > 0) || !foes.some((m) => m.hp > 0)) return;
+    for (const f of foes) seenFoes.add(f.ec); // all three are visible on the field
+    onFieldFoes = foes.filter((f) => f.hp > 0);
+    const stg = (m: Mon) => Object.values(m.boosts ?? {}).join(",");
+    const key = `R:${mine.map((m) => `${m.ec}:${m.hp}:${m.status}:${stg(m)}`).join(",")}|${foes.map((m) => `${m.ec}:${m.hp}:${m.status}:${stg(m)}`).join(",")}|${Object.keys(revealed()).join(",")}`;
+    const now = Date.now();
+    if (s.counter !== lastCounter) { lastCounter = s.counter; stableSince = now; }
+    if (key === lastKey || now - stableSince < 800) return;
+    lastKey = key;
+    const r = analyzeRotation({ mine, foes, abilityKnown }, NUZLOCKE);
+    latest = { status: "battle", rotation: r, nuzlocke: NUZLOCKE, at: now };
+    push();
+    console.log(`[rotation] ${r.actives.map((a) => `${a.front ? "*" : ""}${a.name} ${a.hp}/${a.maxHP}`).join(", ")} vs ${r.foes.map((f) => `${f.front ? "*" : ""}${f.name} ${f.hp}/${f.maxHP}`).join(", ")} → ${r.pick ? `${r.pick.rotate ? "rotate to " : ""}${r.pick.pokemon}: ${r.pick.move}. ${r.pick.reason}` : "no pick"}`);
+    return;
+  }
   // ---- Double battles: separate analysis and advice ----
   if (s.double) {
     const byEC = (list: Mon[], ec: number) => list.find((m) => m.ec === ec);
     const mine = s.myActives.map((ec) => byEC(s.battleParty, ec)).filter((m): m is Mon => !!m && m.hp > 0);
     const foes = s.foeActives.map((ec) => byEC(s.enemyTeam, ec)).filter((m): m is Mon => !!m && m.hp > 0);
     if (!mine.length || !foes.length) return;
+    onFieldFoes = foes;
+    for (const f of foes) { const why = !abilityKnown(f.species) && infer.entry(f, mine[0].heldItem); if (why) reveal(f, why); }
     const stg = (m: Mon) => Object.values(m.boosts ?? {}).join(",");
     const key = `D:${mine.map((m) => `${m.ec}:${m.hp}:${m.status}:${stg(m)}`).join(",")}|A:${s.allyActive ? `${s.allyActive.ec}:${s.allyActive.hp}` : ""}|${foes.map((m) => `${m.ec}:${m.hp}:${m.status}:${stg(m)}`).join(",")}`;
     const now = Date.now();
@@ -326,8 +362,11 @@ function poll() {
     push();
     console.log(`[doubles] ${d.actives.map((a) => `${a.name} ${a.hp}/${a.maxHP}`).join(" + ")}${d.ally ? ` + ${d.ally.name} ${d.ally.hp}/${d.ally.maxHP}` : ""} vs ${d.foes.map((f) => `${f.name} ${f.hp}/${f.maxHP}`).join(" + ")}`);
     const foeOT = s.enemyTeam[0]?.ot ?? "";
-    adviseDouble(catchMode ? { ...d, catchMode: { foe: catchMode.foe, bestBall: catchMode.odds.odds[0], movesThatCouldKO: catchMode.koMoves } } : d, DYNAMAX_TRAINERS.has(foeOT) && BOSS_MODEL ? BOSS_MODEL : undefined).then((adv) => {
+    // Never advise catching (Sam, 10-06): the AI gets no catch info, and any ball throw it names is replaced below.
+    adviseDouble(d, DYNAMAX_TRAINERS.has(foeOT) && BOSS_MODEL ? BOSS_MODEL : undefined).then((adv) => {
       if (seq !== adviceSeq) return;
+      adv.actions = adv.actions.map((x) => /\b(throw|ball|catch)\b/i.test(x.choice)
+        ? (() => { const p = d.picks.find((q) => q.pokemon === x.pokemon) ?? d.picks[0]; console.log(`[advice2] dropped catch advice: ${x.choice}`); return { pokemon: x.pokemon, choice: p?.move ?? "–", target: p?.target ?? "–" }; })() : x);
       const chk = checkDoubleAdvice(d, adv.actions);
       if (chk.notes.length) { adv.actions = chk.actions; adv.reason = `${adv.reason} [Overruled: ${chk.notes.join("; ")}.]`; console.log(`[advice2] overruled: ${chk.notes.join("; ")}`); }
       latest.doubleAdvice = adv; push();
@@ -346,12 +385,12 @@ function poll() {
   // The on-field enemy just fainted and more remain: the "switch before the next one?" moment.
   const fainted = s.enemyTeam.find((m) => m.ec === s.foeFieldEC && m.hp === 0);
   between = !!fainted && s.enemyTeam.some((m) => m.hp > 0);
-  if (!foe && !s.wild) return setStatus("waiting");
+  if (!foe && !s.wild) { if (latest.status === "battle") console.log(`[status] no foe: ${s.enemyTeam.map((m) => `${m.ec}:${m.hp}`).join(",")} field=${s.foeFieldEC}`); return setStatus("waiting"); }
   // Sam doesn't get to know an opponent's team: only Pokémon that have been on the field are ever analyzed or shown.
   if (byRecord) seenFoes.add(byRecord.ec);
   const alive = s.enemyTeam.filter((m) => m.hp > 0);
   if (foe && !seenFoes.has(foe.ec)) {
-    if (!between) return setStatus("waiting");
+    if (!between) { if (latest.status === "battle") console.log(`[status] unseen foe: ${s.enemyTeam.map((m) => `${m.ec}:${m.hp}`).join(",")} field=${s.foeFieldEC}`); return setStatus("waiting"); }
     // At the "Will you switch?" prompt the game names the next Pokémon. With one left that's certain; with more,
     // RAM can't tell which is coming, so update() gives one stay/switch call that's safe against all of them.
     if (alive.length === 1) seenFoes.add(alive[0].ec);
@@ -372,7 +411,7 @@ function poll() {
     const pct = (100 * foe.hp) / foe.maxHP;
     for (const [, move] of s.used) {
       const h = latest.analysis.myMoves.find((x) => x.move === moveName(move));
-      if (h && h.category !== "Status") pendingHit = { foe: foe.ec, predicted: (h.pctMax[0] + h.pctMax[1]) / 2 / (damageScale.get(foe.ec) ?? 1), hpBefore: latest.analysis.enemy.hpPercent, at: Date.now() };
+      if (h && h.category !== "Status") pendingHit = { foe: foe.ec, predicted: (h.pctMax[0] + h.pctMax[1]) / 2 / (damageScale.get(foe.ec) ?? 1), hpBefore: latest.analysis.enemy.hpPercent, at: Date.now(), move: h.move };
     }
     if (pendingHit && pendingHit.foe === foe.ec && pct < pendingHit.hpBefore - 0.5 && pendingHit.predicted > 0) {
       const observed = pendingHit.hpBefore - pct;
@@ -383,6 +422,8 @@ function poll() {
         const prev = damageScale.get(foe.ec);
         damageScale.set(foe.ec, prev ? (prev + ratio) / 2 : ratio);
         console.log(`[calib] ${speciesName(foe.species)}: predicted ${pendingHit.predicted.toFixed(0)}%, observed ${observed.toFixed(0)}% → scale ${damageScale.get(foe.ec)!.toFixed(2)}`);
+        const why = !abilityKnown(foe.species) && infer.shortfall(foe, pendingHit.move, observed / pendingHit.predicted, effectiveness(pendingHit.move, toCalc(foe).types) > 1, pendingHit.hpBefore >= 99.5);
+        if (why) reveal(foe, why);
       }
       pendingHit = null;
     } else if (pendingHit && Date.now() - pendingHit.at > 15_000) pendingHit = null;
@@ -391,6 +432,11 @@ function poll() {
   const team = s.battleParty.length ? s.battleParty : s.party;
   const me = team.find((m) => m.species === s.active?.species) ?? team[0];
   const enemyMon = foe ?? s.wild!;
+  onFieldFoes = [enemyMon];
+  if (foe && !abilityKnown(foe.species)) {
+    const why = infer.entry(foe, me.heldItem) || infer.observe(foe, { ...me, hp: s.active?.hp ?? me.hp }, s.used.map(([, mv]) => mv), s.foeUsed ?? []);
+    if (why) reveal(foe, why);
+  }
   // Bide window (see `bide` above). The release is the first HP drop on my active Pokémon after Bide starts.
   const myHP = s.active?.hp ?? me.hp;
   if (foe && s.foeUsed?.includes(BIDE) && bide?.ec !== foe.ec) {
@@ -485,6 +531,11 @@ http.createServer((req, res) => {
       if (latest.planSteps) { latest.planSteps = planSteps(); if (!latest.planSteps.length) latest.bagTips = [...(latest.bagTips ?? []), ...planTips()]; push(); }
     }
     res.end("ok");
+  } else if (url.pathname === "/reveal" && req.method === "POST") {
+    // Sam saw a foe's ability pop up: mark its species known (the calc then uses the real randomized ability).
+    const name = url.searchParams.get("name") ?? "", m = onFieldFoes.find((f) => name.startsWith(speciesName(f.species)));
+    if (m) { reveal(m, "Sam saw it"); if (current) void update(current, true); }
+    res.end(m ? abilityName(m.ability) : "not on field");
   } else if (url.pathname === "/enemy-hp" && req.method === "POST") {
     enemyPct = Math.min(100, Math.max(0, Number(url.searchParams.get("pct"))));
     if (current) { current.enemy.hpPercent = enemyPct; lastKey = ""; void update(current, true); }
