@@ -134,7 +134,7 @@ async function update(state: BattleState, estimated: boolean, balls: { id: numbe
   }
   const bideNow = bide && bide.ec === state.enemy.active.ec ? { storedHP: Math.max(0, bide.hpStart - state.enemy.active.hp) } : undefined;
   const analysis = analyze(state, { preferLowLevel: capOn, dynamaxUsed: dynamaxUsed || !dynamaxAllowed, freeSwitch: between,
-    myDamageScale: damageScale.get(state.enemy.active.ec) ?? 1, bide: bideNow, weather: weather?.kind });
+    myDamageScale: damageScale.get(state.enemy.active.ec) ?? 1, bide: bideNow, weather: weather?.kind, leftThisFoe });
   const seq = ++adviceSeq;
   const e = analysis.enemy;
   const tf = state.enemy.active as Mon & { realSpecies?: number; transformPending?: boolean };
@@ -217,6 +217,7 @@ const foeHPPrev = new Map<number, number>();
 // Battle weather: a weather ability sets it on entry for the rest of the battle (Gen 5); Sunny Day etc. for 5 turns.
 const WEATHER_MOVE: Record<number, Weather> = { 241: "Sun", 240: "Rain", 201: "Sand", 258: "Hail" };
 let weather: { kind: Weather; until: number } | null = null, prevMyEC = 0, prevFoeEC = 0;
+const leftThisFoe = new Set<number>();
 // Transform / Imposter: the foe becomes a copy of my Pokémon (species, types, stats except HP, moves at 5 PP, ability,
 // boosts) until it leaves the field. Before it transforms, a foe that knows Transform is modelled as a copy of my
 // active Pokémon (the worst case: it hits back with my own moves).
@@ -268,7 +269,7 @@ function poll() {
     }
   } catch (e) { console.log("[newmoves]", (e as Error).message); }
   if (!s.inBattle) {
-    battleEC = 0; current = null; lastKey = ""; infer.reset(); dynamaxUsed = false; seenFoes.clear(); weather = null; prevMyEC = prevFoeEC = 0; transform = null;
+    battleEC = 0; current = null; lastKey = ""; infer.reset(); dynamaxUsed = false; seenFoes.clear(); leftThisFoe.clear(); weather = null; prevMyEC = prevFoeEC = 0; transform = null;
     // Between battles: who needs healing before the next fight (save-copy HP is current here).
     const team = s.party.map((m) => ({ name: monLabel(m), hp: m.hp, maxHP: toCalc(m).maxHP() }));
     // Poké Mart buy menu: checked every 2 s; a list seen twice in a row is the open shop. Opening one re-plans now.
@@ -464,6 +465,9 @@ function poll() {
     transform = { ec: foe.ec, copy: { ...me } };
     console.log(`[transform] ${speciesName(foe.species)} transformed into ${speciesName(me.species)}`);
   }
+  // Who switched out against this foe (no switching back to them: Sam, 10-06, "this is circular").
+  if ((foe?.ec ?? 0) !== prevFoeEC) leftThisFoe.clear();
+  else if (prevMyEC && me.ec !== prevMyEC) leftThisFoe.add(prevMyEC);
   prevMyEC = me.ec; prevFoeEC = foe?.ec ?? 0;
   // Dynamax: the live max HP roughly doubles (1.5–2×) vs the stat-computed max.
   const isDmax = (m: Mon & { maxHP?: number }) => !!m.maxHP && m.maxHP >= 1.4 * toCalc({ ...m, dynamax: false }).maxHP();

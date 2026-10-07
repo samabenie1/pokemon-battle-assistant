@@ -141,6 +141,14 @@ function abilityFactor(mon: Mon, move: string) {
 }
 
 // Setup moves: the stage gain a switch gives away (a switch = a free turn for the enemy to use one).
+/** Status moves that hurt even though the damage calc scores them 0% (Curse is handled separately: Ghost only). */
+const STATUS_THREAT: Record<string, string> = {
+  "Will-O-Wisp": "burn (halves physical damage, 1/8 HP per turn; Hex then hits double)",
+  "Toxic": "bad poison (growing damage every turn; Hex/Venoshock then hit double)", "Poison Powder": "poison (1/8 HP per turn)",
+  "Poison Gas": "poison (1/8 HP per turn)", "Thunder Wave": "paralysis (halves speed, 25% of turns lost)", "Stun Spore": "paralysis",
+  "Glare": "paralysis", "Spore": "sleep", "Sleep Powder": "sleep", "Hypnosis": "sleep", "Sing": "sleep", "Lovely Kiss": "sleep",
+  "Grass Whistle": "sleep", "Dark Void": "sleep", "Yawn": "sleep next turn", "Leech Seed": "drains 1/8 HP per turn to the foe",
+};
 const SETUP: Record<string, Partial<Record<"atk" | "spa" | "spe" | "def" | "spd", number>>> = {
   "Nasty Plot": { spa: 2 }, "Swords Dance": { atk: 2 }, "Shell Smash": { atk: 2, spa: 2, spe: 2 },
   "Calm Mind": { spa: 1, spd: 1 }, "Dragon Dance": { atk: 1, spe: 1 }, "Bulk Up": { atk: 1, def: 1 },
@@ -196,7 +204,7 @@ export const preferNotAhead = <T extends { overLeveled?: boolean }>(list: T[]) =
  *  dynamaxUsed: the player already Dynamaxed this battle (one per battle). */
 /** myDamageScale: observed/predicted damage ratio for my attacks on this enemy (hidden ability, Intimidate…). */
 /** bide: the enemy is storing damage with Bide (storedHP so far); it comes back doubled to whoever is in front. */
-export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number; runAttempts?: number; bide?: { storedHP: number }; weather?: Weather } = {}) {
+export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynamaxUsed?: boolean; freeSwitch?: boolean; myDamageScale?: number; runAttempts?: number; bide?: { storedHP: number }; weather?: Weather; leftThisFoe?: Set<number> } = {}) {
   weatherNow = opts.weather;
   const k = opts.myDamageScale ?? 1;
   const scaleHit = <T extends { pctMax: number[]; ofCurrent: number[]; ko: string; defenderHP: number }>(h: T): T => {
@@ -256,13 +264,37 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   const lv = team.map((m) => m.level ?? 1).sort((a, b) => a - b), mid = lv.length >> 1;
   const medLevel = lv.length % 2 ? lv[mid] : (lv[mid - 1] + lv[mid]) / 2;
   const ahead = (m: Mon) => !!opts.preferLowLevel && (m.level ?? 1) >= medLevel + 3;
-  const switches = s.me.bench.filter((m) => m.hp > 0).map((b) => {
+  // Status moves the damage calc scores as 0% but that still hurt (Sam, 10-06: Dusknoir's Will-O-Wisp burned COOKIE
+  // after the advice called the switch "free", then Hex hit for double). Curse only does this from a Ghost.
+  const enemyMoveNames = usableMoves(enemyMon).map(moveName);
+  const statusThreats = enemyMoveNames.flatMap((mv) => {
+    if (mv === "Curse") return enemy.types.includes("Ghost") ? [`Curse: the target loses 25% max HP every turn until it switches out`] : [];
+    const what = STATUS_THREAT[mv];
+    return what ? [`${mv}: ${what}`] : [];
+  });
+  const inflictsStatus = enemyMoveNames.some((mv) => STATUS_THREAT[mv] && mv !== "Leech Seed");
+  // Hex (and Venoshock vs poison) doubles on a statused target: score it as if the status already landed.
+  const worstVsStatused = (bp: Pokemon, f: Field) => {
+    if (!inflictsStatus || bp.status) return null;
+    const statused = bp.clone(); statused.status = "brn";
+    return enemyMoveNames.filter((mv) => mv === "Hex").map((mv) => ({ ...hit(enemy, statused, mv, f), move: `${mv} (after a status)` }))[0] ?? null;
+  };
+  // Trapping abilities (Sam, 10-06: Jolteon's Arena Trap, and the advice still said "switch to COOKIE"). Only counts
+  // when the ability is known (revealed or owned); Shed Shell and Ghost types (Gen 6+) aren't relevant in Gen 5.
+  const grounded = !me.types.includes("Flying") && me.ability !== "Levitate" && me.item !== "Air Balloon";
+  const trapAbility = hideAbility ? "" : enemy.ability ?? "";
+  const trapped = me.item === "Shed Shell" ? null
+    : trapAbility === "Shadow Tag" && me.ability !== "Shadow Tag" ? "Shadow Tag"
+    : trapAbility === "Arena Trap" && grounded ? "Arena Trap"
+    : trapAbility === "Magnet Pull" && me.types.includes("Steel") ? "Magnet Pull" : null;
+  const switches = (trapped && !opts.freeSwitch ? [] : s.me.bench).filter((m) => m.hp > 0).map((b) => {
     const bp = toCalc(b);
     // A switch-in with Drought/Drizzle/… brings its weather (it's set on entry, before the enemy's hit).
     const f = new Field({ weather: WEATHER_ABILITY[abilityName(b.ability)] ?? opts.weather });
     const worstNow = usableMoves(enemyMon).map((m) => hit(enemy, bp, moveName(m), f)).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const worstBoosted = setupMove ? usableMoves(enemyMon).map((m) => hit(enemyAfterSetup, bp, moveName(m), f)).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0] : undefined;
-    const worstIn = worstBoosted && worstBoosted.pctMax[1] > (worstNow?.pctMax[1] ?? 0) ? worstBoosted : worstNow;
+    const worstHex = worstVsStatused(bp, f);
+    const worstIn = [worstNow, worstBoosted, worstHex].filter((h): h is NonNullable<typeof h> => !!h).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const bestOut = (usableMoves(b).length ? usableMoves(b) : [STRUGGLE]).map((m) => scaleHit(hit(bp, enemy, moveName(m), f))).sort((a, c) => c.pctMax[1] - a.pctMax[1])[0];
     const st = statusOf(b.status);
     const disabled = st === "slp" || st === "frz"; // can't act after switching in
@@ -270,7 +302,7 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     const bidePct = opts.bide && !bp.types.includes("Ghost") ? Math.round(100 * releaseHP / bp.maxHP()) : 0;
     const bideWorst = bidePct > (worstIn?.pctMax[1] ?? 0) ? { move: "Bide (release)", pctMax: [bidePct, bidePct] } : null;
     return {
-      name: monLabel(b), level: b.level, overLeveled: ahead(b), hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
+      name: monLabel(b), level: b.level, overLeveled: ahead(b), recentlyOut: !!opts.leftThisFoe?.has(b.ec), hp: `${b.hp}/${bp.maxHP()}`, types: bp.types, status: st,
       takesWorst: bideWorst ?? (worstIn && { move: worstIn.move, pctMax: worstIn.pctMax }), bestMove: bestOut && { move: bestOut.move, pctMax: bestOut.pctMax, ko: bestOut.ko },
       speed: effSpeed(bp),
       matchup: disabled
@@ -294,13 +326,19 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
   // Only suggest a swap when it clearly beats staying in.
   // Safety first: the winning switch-in that takes the least damage; level only breaks near-ties (training mode).
   const taken = (x: (typeof switches)[number]) => x.takesWorst?.pctMax[1] ?? 0;
-  const best = preferNotAhead([...switches].filter((x) => x.matchup.wins))
+  // No ping-pong (Sam, 10-06: Slaking → Gigalith → Slaking): a Pokémon that already switched out vs this foe comes
+  // back only if nothing else wins.
+  const winners = switches.filter((x) => x.matchup.wins);
+  const fresh = winners.filter((x) => !x.recentlyOut);
+  const best = preferNotAhead(fresh.length ? fresh : winners)
     .sort((a, b) => (Math.abs(taken(a) - taken(b)) > 10 ? taken(a) - taken(b) : 0)
       || (opts.preferLowLevel ? (a.level ?? 0) - (b.level ?? 0) : 0) || b.matchup.margin - a.matchup.margin)[0];
   // Enemy has no damaging moves: switching is free, so bring in the hardest hitter (chip damage
   // loses to Pain Split / Recover / screens, and there's nothing to fear).
-  const enemyHarmless = !opts.bide && enemyMoves.every((m) => m.category === "Status" || m.pctMax[1] === 0);
-  const hitter = enemyHarmless ? preferNotAhead([...switches]).sort((x, y) => (y.bestMove?.pctMax[0] ?? 0) - (x.bestMove?.pctMax[0] ?? 0))[0] : undefined;
+  // "Harmless" vs the active (Ghost moves vs Slaking) isn't harmless vs a switch-in: the switch-in must take 0% too,
+  // and there must be no status threat (10-06: Dusknoir looked harmless to Slaking, so it sent in Gigalith).
+  const enemyHarmless = !opts.bide && !statusThreats.length && enemyMoves.every((m) => m.category === "Status" || m.pctMax[1] === 0);
+  const hitter = enemyHarmless ? preferNotAhead(switches.filter((x) => taken(x) === 0 && !x.recentlyOut)).sort((x, y) => (y.bestMove?.pctMax[0] ?? 0) - (x.bestMove?.pctMax[0] ?? 0))[0] : undefined;
   const freeSwap = hitter && (hitter.bestMove?.pctMax[0] ?? 0) > (myMoves[0]?.pctMax[0] ?? 0) * 1.5
     ? { to: hitter.name, reason: `${enemy.name} has no damaging moves, so switching is free: ${hitter.name}'s ${hitter.bestMove?.move} does ${hitter.bestMove?.pctMax.join("–")}% vs ${monLabel(s.me.active)}'s best ${myMoves[0]?.pctMax.join("–")}%.` }
     : null;
@@ -319,13 +357,13 @@ export function analyze(s: BattleState, opts: { preferLowLevel?: boolean; dynama
     iMoveFirst: effSpeed(me) > effSpeed(enemy) ? true : effSpeed(me) < effSpeed(enemy) ? false : "speed tie",
     // Damaging priority moves (Quick Attack, Aqua Jet…) hit before a faster Pokémon, so they rule out a "KO before it moves".
     enemyPriority: enemyMoves.filter((m) => m.category !== "Status" && new Move(gen, m.move).priority > 0).map((m) => m.move),
-    myMoves, enemyMoves, switches, trainer: s.trainer,
+    myMoves, enemyMoves, switches, trainer: s.trainer, statusThreats, trapped: opts.freeSwitch ? null : trapped,
     enemyOutOfPP: enemyMon.moves.filter((mv, i) => mv && enemyMon.pp[i] === 0).map(moveName),
     damageScale: k, activeMatchup: activeMatch, swap, koRisk,
     weather: opts.weather ?? null,
     enemyBide: opts.bide ? { storedHP: opts.bide.storedHP, releaseHP, releaseKOs: bideKOs } : null,
     // Wild battles: escape odds (Gen 3+): always if at least as fast, else (A×128/B + 30×attempts)/256.
-    run: s.trainer ? null : (() => {
+    run: s.trainer || (trapped && !opts.freeSwitch) ? null : (() => {
       const A = effSpeed(me), B = effSpeed(enemy);
       return { chance: A >= B ? 1 : Math.min(1, (Math.floor((A * 128) / Math.max(1, B)) + 30 * ((opts.runAttempts ?? 0) + 1)) / 256) };
     })(), between: !!opts.freeSwitch, enemySetupMove: setupMove ?? null,

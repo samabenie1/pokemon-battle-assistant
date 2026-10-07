@@ -90,6 +90,8 @@ const STATUS_MOVES = new Set(["Hypnosis", "Sleep Powder", "Spore", "Sing", "Love
 
 export function checkAdvice(adv: Advice, a: Analysis, nuzlocke: boolean): string | null {
   if (a.between && adv.choice === "Stay") return null;
+  if ((adv.action === "switch" || adv.action === "run") && a.trapped)
+    return `${a.me.name} can't ${adv.action === "run" ? "run" : "switch out"}: ${a.enemy.name}'s ${a.trapped} traps it. Pick the safest move.`;
   if (adv.action === "run") return a.run ? null : "You can't run from a trainer battle.";
   if (adv.action === "switch" && !a.between) {
     const k = switchKills(a, adv.choice, nuzlocke);
@@ -106,6 +108,14 @@ export function checkAdvice(adv: Advice, a: Analysis, nuzlocke: boolean): string
       const other = a.switches.find((x) => !x.overLeveled && x.matchup.wins && !switchKills(a, x.name, nuzlocke));
       if (other) return `${adv.choice} is Lv ${sw.level}, ahead of the team; ${other.name} (Lv ${other.level}) also wins safely, so bring it in for the EXP.`;
     }
+    // No ping-pong (Sam, 10-06: Slaking → Gigalith → Slaking was "circular").
+    const freshWinner = a.switches.find((x) => !x.recentlyOut && x.matchup.wins && !switchKills(a, x.name, nuzlocke));
+    if (sw.recentlyOut && freshWinner)
+      return `${adv.choice} already switched out vs ${a.enemy.name}; ${freshWinner.name} wins safely instead, so no switching back and forth.`;
+    // Never switch out a Pokémon that is winning safely just for EXP (Sam, 10-06: "just for XP gain?"): the
+    // switch-in eats a free hit. EXP only decides WHO comes in when a switch is needed anyway.
+    if (!danger && a.activeMatchup.wins && !a.koRisk.withCrit && a.swap?.to !== sw.name)
+      return `${a.me.name} is winning safely; switching to ${adv.choice} only gives ${a.enemy.name} a free hit.`;
     if (!sw.matchup.wins && !danger)
       return `${adv.choice} loses the matchup vs ${a.enemy.name} (needs ${sw.matchup.myHits} hits, dies in ${sw.matchup.theirHits}), so it would just have to switch back out.`;
   }

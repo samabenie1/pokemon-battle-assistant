@@ -88,6 +88,10 @@ Switching costs your turn and the switch-in takes a hit, so only switch to a Pok
 (switches[].matchup.wins). Never recommend switching back and forth; if nobody wins, attack with the best move.
 damageScale < 1 means my real hits on this enemy did less than predicted (hidden ability etc.); numbers already adjusted.
 
+trapped (when set): the foe's ability (Arena Trap / Shadow Tag / Magnet Pull) stops switching and running. Pick the safest move.
+statusThreats: the foe's status moves the damage numbers can't show (burn, poison, paralysis, sleep, Leech Seed, a Ghost's
+Curse = 25% max HP per turn). A Pokémon "taking 0%" from a foe can still be worn down by these; count them.
+switches[].recentlyOut = it already switched out against this foe: don't switch back to it if another switch-in works.
 STRICT PRIORITY ORDER: (1) no Pokémon faints (in a Nuzlocke a faint is permanent), (2) win the fight, (3) spread EXP.
 Never accept extra faint risk for EXP or leveling, not even a small one.
 
@@ -110,7 +114,8 @@ const RUN_RULES = [
 - Never sacrifice a Pokémon, and never recommend a move that only wins on a good roll when a safe alternative exists.`,
   TARGET && `The player is levelling the team EVENLY to Lv ${TARGET} (the next boss / level cap), and over-levelled Pokémon get boxed.
 - training.members lists each Pokémon's level and EXP. ${GAME.expShareAll ? "Anyone who's been on the field gets full EXP, the rest get half." : "Only Pokémon that were on the field get EXP (split between them); the bench gets none."}
-- Only switch for EXP reasons to a Pokémon whose switches[].matchup.wins is true; a switch-in that loses will just have to switch back.
+- NEVER switch out a Pokémon that is winning safely just for EXP: the switch-in eats a free hit. EXP only decides WHO
+  comes in when a switch is needed for safety, or at the free switch after a KO (between = true).
 - Only AFTER safety: prefer plays that give KOs and full EXP to the lowest-level Pokémon. Avoid using Pokémon at or above the cap for KOs.
   If the safest play uses a high-level Pokémon, pick the safe play.
 - training.tip is a deterministic suggestion for this. Follow it unless safety says otherwise.`,

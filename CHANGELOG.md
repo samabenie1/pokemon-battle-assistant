@@ -21,6 +21,18 @@ Notable changes, newest first. Dates are when the change landed on `main`.
 - Stall, Lagging Tail and Full Incense count as always moving last.
 
 ### Fixed
+- **Trapping abilities.** Arena Trap (grounded targets), Shadow Tag and Magnet Pull (Steel targets) now block
+  switching and running once the foe's ability is known. Before, the advice still said "switch to COOKIE" while
+  Deoxys was stuck against an Arena Trap Jolteon.
+- **No more switch ping-pong.** A Pokémon that already switched out against the current foe isn't sent back in if
+  another switch-in wins safely (the advice had gone Slaking → Gigalith → Slaking).
+- **"Free" switches have to really be free.** A foe that can't hurt the Pokémon currently out (Ghost moves vs
+  Slaking) must also do 0% to the switch-in and have no status move. Before, the advice sent Gigalith into a
+  Dusknoir that burned it with Will-O-Wisp and then hit it with a doubled Hex.
+- **Status threats are counted.** Will-O-Wisp, Toxic, paralysis and sleep moves, Leech Seed and a Ghost's Curse
+  are listed for the AI, and Hex is scored as if the switch-in already has a status.
+- **No EXP-only switches.** A Pokémon that's winning safely isn't switched out just to spread EXP, because the
+  switch-in takes a free hit. EXP only decides who comes in when a switch is needed anyway.
 - Wild partner battles (an AI ally beside you in the grass): both wild Pokémon are read. Before, only the first one
   was, which put the page in catch mode with one foe still unaccounted for. The partner's Pokémon have a blank OT
   in RAM and are no longer mistaken for leftovers.
